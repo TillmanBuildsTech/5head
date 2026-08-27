@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (.NET 9)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      - name: Test
+        run: dotnet test --no-build -c Release --logger trx --results-directory ./test-results
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: ./test-results
+
+  aot-build:
+    name: Native AOT (${{ matrix.os }} ${{ matrix.arch }})
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+          - os: windows-latest
+            rid: win-x64
+          - os: macos-latest
+            rid: osx-arm64
+          - os: macos-13
+            rid: osx-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Publish Native AOT
+        run: >
+          dotnet publish src/FiveHead.Mcp.Host/FiveHead.Mcp.Host.csproj
+          -c Release
+          -r ${{ matrix.rid }}
+          --self-contained true
+          /p:PublishAot=true
+          -o ./publish/${{ matrix.rid }}
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: 5head-mcp-${{ matrix.rid }}
+          path: ./publish/${{ matrix.rid }}/
+
+  # Verify stdout-silence (critical gate: stdout must only emit valid JSON-RPC)
+  stdout-silence:
+    name: stdout-silence gate
+    needs: aot-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: 5head-mcp-linux-x64
+          path: ./bin/
+      - name: Make executable
+        run: chmod +x ./bin/5head-mcp
+      # TODO: pipe a well-formed initialize request and assert no non-JSON-RPC bytes on stdout
+      - name: Placeholder stdout-silence check
+        run: echo "TODO implement stdout-silence integration test"

@@ -1,0 +1,33 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.nupkg
+*.snupkg
+TestResults/
+test-results/
+
+# publish outputs
+publish/
+
+# npm
+node_modules/
+npm/node_modules/
+npm/bin/5head-mcp
+npm/bin/5head-mcp.exe
+*.tgz
+
+# local e2e scratch (tmp/npm-e2e)
+tmp/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SQLite (local provenance DB — intentionally NOT committed)
+*.db
+*.db-shm
+*.db-wal
