@@ -122,6 +122,10 @@ jobs:
           cd snapshot-assets
           for d in */; do
             rid="${d%/}"                       # artifact dir name == rid
+            if [[ ! -e "$rid/5head-mcp" && ! -e "$rid/5head-mcp.exe" ]]; then
+              echo "skip $rid (no binary)"
+              continue
+            fi
             if [[ -f "$rid/5head-mcp.exe" ]]; then
               mv "$rid/5head-mcp.exe" "$rid/5head-mcp-$rid.exe"
             else
