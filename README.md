@@ -23,10 +23,20 @@ and the one-line installer downloads the right one for your machine.
 curl -sL https://github.com/TillmanBuildsTech/5head/releases/latest/download/install.js | node
 ```
 
-This fetches the matching binary for your OS/arch from the latest release and
-installs it to `~/.5head/bin/5head-mcp` (no npm, no npmjs, nothing else
-installed). You need Node.js — which you have if you use Claude Code, Cursor,
-or any Node-based MCP client.
+This fetches the matching binary for your OS/arch from the latest **stable**
+release and installs it to `~/.5head/bin/5head-mcp` (no npm, no npmjs, nothing
+else installed). You need Node.js — which you have if you use Claude Code,
+Cursor, or any Node-based MCP client.
+
+### Snapshot (pre-release) install
+
+Every PR against `main` publishes its binaries as a rolling `snapshot`
+pre-release. To try the latest unreleased build instead of the stable release:
+
+```sh
+export FIVEHEAD_MCP_RELEASE_TAG=snapshot
+curl -sL https://github.com/TillmanBuildsTech/5head/releases/download/snapshot/install.js | node
+```
 
 ### Manual download (no Node)
 
@@ -172,8 +182,8 @@ MCP Client (Claude Code / Copilot / Cursor)
 ### Release pipeline
 
 - **Snapshot build** — every PR against `main` runs `ci.yml`: build + test +
-  Native AOT for all platforms, with the binaries attached to the PR as
-  workflow artifacts for manual snapshot testing.
+  Native AOT for all platforms, and publishes the binaries as a rolling
+  `snapshot` **pre-release** for trying unreleased builds.
 - **Production release** — merging that PR to `main` runs `release.yml`: it
   rebuilds the exact release binaries, publishes a GitHub Release `v<version>`
   (with the one-line installer and the platform binaries as assets), then bumps
