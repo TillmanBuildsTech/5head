@@ -1,10 +1,15 @@
-name: CI
+name: Snapshot build (CI)
+
+# SNAPSHOT build: runs when a branch opens a PR against main. Builds + tests
+# the code and produces Native AOT binaries as workflow artifacts (the
+# "snapshot") that reviewers can grab and try.
+#
+# Production release happens on merge to main — see release.yml.
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   test:
@@ -35,7 +40,7 @@ jobs:
           path: ./test-results
 
   aot-build:
-    name: Native AOT (${{ matrix.os }} ${{ matrix.arch }})
+    name: Native AOT (${{ matrix.os }} / ${{ matrix.rid }})
     needs: test
     strategy:
       matrix:
@@ -48,7 +53,7 @@ jobs:
             rid: win-x64
           - os: macos-latest
             rid: osx-arm64
-          - os: macos-13
+          - os: macos-latest
             rid: osx-x64
     runs-on: ${{ matrix.os }}
     steps:
