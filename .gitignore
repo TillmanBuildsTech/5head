@@ -12,16 +12,10 @@ test-results/
 # publish outputs
 publish/
 
-# npm
-node_modules/
-npm/node_modules/
-npm/bin/5head-mcp
-npm/bin/5head-mcp.exe
-*.tgz
-
-# local e2e scratch (tmp/npm-e2e)
+# local e2e scratch
 tmp/
 *.log
+*.tgz
 
 # OS
 .DS_Store
