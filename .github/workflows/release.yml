@@ -1,0 +1,179 @@
+name: Release
+
+# Production release on merge to main.
+#
+#   - A PR opening against main runs ci.yml (the SNAPSHOT build): build + test +
+#     Native AOT, artifacts attached to the PR for manual snapshot testing.
+#   - Merging that PR to main triggers THIS workflow: it rebuilds the exact
+#     release binaries at the current version, publishes them as a GitHub
+#     Release (v<version>), attaches the one-line installer (install.js) and the
+#     platform binaries, then bumps the version (patch by default; add
+#     `[release:minor]` or `[release:major]` to the PR/merge message to bump
+#     that part) and opens a release PR that carries the bump back to main.
+#
+# Install is registry-free: `curl -sL .../releases/latest/download/install.js | node`
+# fetches the matching binary directly from this release (no npm/npmjs).
+#
+# NOTE on branch protection: main is PR-only and the bot cannot push to it, so
+# the version bump is delivered as a PR (created by this workflow) for a human
+# to merge. The new version is tagged as an empty release at the same time so
+# that when that bump PR is merged it does not re-trigger a duplicate release.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_NOLOGO: "true"
+
+jobs:
+  # --- Resolve the version to release, the bump type, and whether we're
+  #     re-running on an already-released commit (guard / idempotency). ---
+  release-meta:
+    name: Resolve release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      bump: ${{ steps.bump.outputs.bump }}
+      skip: ${{ steps.guard.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Current version (from Host csproj)
+        id: version
+        run: echo "version=$(grep -oP '(?<=<Version>)[0-9.]+(?=</Version>)' src/FiveHead.Mcp.Host/FiveHead.Mcp.Host.csproj | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Bump type from merge commit message
+        id: bump
+        run: |
+          MSG=$(git log -1 --format=%B)
+          if echo "$MSG" | grep -qi '\[release:major\]'; then
+            echo "bump=major" >> "$GITHUB_OUTPUT"
+          elif echo "$MSG" | grep -qi '\[release:minor\]'; then
+            echo "bump=minor" >> "$GITHUB_OUTPUT"
+          else
+            echo "bump=patch" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if this version is already released
+        id: guard
+        run: |
+          if git ls-remote --tags origin "refs/tags/v${{ steps.version.outputs.version }}" | grep -q .; then
+            echo "v${{ steps.version.outputs.version }} already released — nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # --- Rebuild the exact production binaries for every platform. ---
+  build:
+    name: Build (${{ matrix.os }} / ${{ matrix.rid }})
+    needs: release-meta
+    if: needs.release-meta.outputs.skip == 'false'
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+          - os: windows-latest
+            rid: win-x64
+          - os: macos-latest
+            rid: osx-arm64
+          - os: macos-latest
+            rid: osx-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Publish Native AOT
+        run: >
+          dotnet publish src/FiveHead.Mcp.Host/FiveHead.Mcp.Host.csproj
+          -c Release
+          -r ${{ matrix.rid }}
+          --self-contained true
+          /p:PublishAot=true
+          /p:Version=${{ needs.release-meta.outputs.version }}
+          -o ./publish/${{ matrix.rid }}
+
+      - name: Rename binary to release asset name
+        shell: bash
+        run: |
+          cd publish/${{ matrix.rid }}
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            mv 5head-mcp.exe 5head-mcp-${{ matrix.rid }}.exe
+          else
+            mv 5head-mcp 5head-mcp-${{ matrix.rid }}
+          fi
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: 5head-mcp-${{ matrix.rid }}
+          path: ./publish/${{ matrix.rid }}/5head-mcp-*
+          if-no-files-found: error
+
+  # --- Create the production release, publish, and bump the version. ---
+  release:
+    name: Publish release + bump version
+    needs: [release-meta, build]
+    if: needs.release-meta.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download release binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Create GitHub Release v${{ needs.release-meta.outputs.version }}
+        run: |
+          # Write the (untrusted) merge-commit message to a file and use
+          # --notes-file so it never lands on the command line.
+          git log -1 --format=%B > RELEASE_NOTES.md
+          gh release create "v${{ needs.release-meta.outputs.version }}" \
+            --title "5head-mcp v${{ needs.release-meta.outputs.version }}" \
+            --notes-file RELEASE_NOTES.md \
+            ./artifacts/*/5head-mcp-* \
+            ./scripts/install.js
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump version and open a release PR
+        run: |
+          node scripts/version.js "${{ needs.release-meta.outputs.bump }}"
+          NEXT=$(grep -oP '(?<=<Version>)[0-9.]+(?=</Version>)' src/FiveHead.Mcp.Host/FiveHead.Mcp.Host.csproj | head -1)
+          BRANCH="chore/release-v${NEXT}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add src/FiveHead.Mcp.Host/FiveHead.Mcp.Host.csproj \
+                  src/FiveHead.Mcp.Core/FiveHead.Mcp.Core.csproj
+          git commit -m "chore(release): bump to v${NEXT}"
+          git push origin "$BRANCH"
+          # PR-only main: the bump lands via a human-merged PR, not a direct push.
+          # Merging it re-triggers this workflow, but release-meta would see the
+          # (unreleased) new version and try to release it — so tag it now as an
+          # empty release; the guard then skips the re-trigger.
+          gh release create "v${NEXT}" --title "5head-mcp v${NEXT}" --notes "Version bump only — see v${{ needs.release-meta.outputs.version }}." || true
+          gh pr create --base main --head "$BRANCH" \
+            --title "chore(release): bump to v${NEXT}" \
+            --body "Release v${{ needs.release-meta.outputs.version }} published. Bumps the in-repo version to v${NEXT} (post-release). Merge to update main." \
+            --repo "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

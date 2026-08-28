@@ -11,22 +11,90 @@
 
 ---
 
-## Quick start
+## Install
 
-Use one of the entrypoints this repo actually ships today:
+No `git clone`, no package manager, no registry. 5head ships pre-built native
+binaries for macOS, Linux, and Windows on every [GitHub Release](../../releases),
+and the one-line installer downloads the right one for your machine.
+
+### One-line install (recommended)
 
 ```sh
-# dev flow from a local checkout
+curl -sL https://github.com/TillmanBuildsTech/5head/releases/latest/download/install.js | node
+```
+
+This fetches the matching binary for your OS/arch from the latest **stable**
+release and installs it to `~/.5head/bin/5head-mcp` (no npm, no npmjs, nothing
+else installed). You need Node.js — which you have if you use Claude Code,
+Cursor, or any Node-based MCP client.
+
+### Snapshot (pre-release) install
+
+Every PR against `main` publishes its binaries as a rolling `snapshot`
+pre-release. To try the latest unreleased build instead of the stable release:
+
+```sh
+export FIVEHEAD_MCP_RELEASE_TAG=snapshot
+curl -sL https://github.com/TillmanBuildsTech/5head/releases/download/snapshot/install.js | node
+```
+
+### Manual download (no Node)
+
+Grab the binary for your platform from the [latest release](../../releases)
+and drop it somewhere on your PATH:
+
+```sh
+# macOS Apple Silicon
+curl -L -o 5head-mcp \
+  https://github.com/TillmanBuildsTech/5head/releases/latest/download/5head-mcp-osx-arm64
+chmod +x 5head-mcp
+
+# Linux x64
+curl -L -o 5head-mcp \
+  https://github.com/TillmanBuildsTech/5head/releases/latest/download/5head-mcp-linux-x64
+chmod +x 5head-mcp
+```
+
+Windows: download `5head-mcp-win-x64.exe`.
+
+### Build from source (developers)
+
+```sh
+git clone https://github.com/TillmanBuildsTech/5head
+cd 5head
+dotnet build
 dotnet run --project src/FiveHead.Mcp.Host
 ```
 
-Then add to your MCP client config:
+Requires the .NET 9 SDK.
+
+> Homebrew, Chocolatey, and `dotnet tool` packaging are planned but not shipped yet.
+
+---
+
+## Configure your MCP client
+
+Point any MCP client at the installed binary's path (default after the
+one-line install is `~/.5head/bin/5head-mcp`):
 
 ```json
 {
   "mcpServers": {
     "memory": {
-      "command": "/absolute/path/to/5head-mcp",
+      "command": "/home/YOU/.5head/bin/5head-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+Or put the binary on your PATH and use the bare name:
+
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "5head-mcp",
       "args": []
     }
   }
@@ -111,33 +179,38 @@ MCP Client (Claude Code / Copilot / Cursor)
 
 ## Distribution
 
-Pre-built binaries are attached to every [GitHub Release](../../releases):
+### Release pipeline
 
-| Platform | Binary |
-|----------|--------|
-| macOS arm64 | `5head-mcp-osx-arm64` |
-| macOS x64 | `5head-mcp-osx-x64` |
-| Linux x64 | `5head-mcp-linux-x64` |
-| Linux arm64 | `5head-mcp-linux-arm64` |
-| Windows x64 | `5head-mcp-win-x64.exe` |
+- **Snapshot build** — every PR against `main` runs `ci.yml`: build + test +
+  Native AOT for all platforms, and publishes the binaries as a rolling
+  `snapshot` **pre-release** for trying unreleased builds.
+- **Production release** — merging that PR to `main` runs `release.yml`: it
+  rebuilds the exact release binaries, publishes a GitHub Release `v<version>`
+  (with the one-line installer and the platform binaries as assets), then bumps
+  the version (patch by default; `[release:minor]` / `[release:major]` in the
+  merge message bumps that part) and opens a release PR carrying the bump back
+  to `main` (main is PR-only, so the bot cannot push directly).
 
-The npm package installs a small Node wrapper at `bin/run.js`. On install, `npm/scripts/install.js` either:
+There is **no npm package and no registry** — distribution is entirely through
+GitHub Releases. Every release carries:
 
-- copies a locally published binary from `FIVEHEAD_MCP_LOCAL_BINARY`, or
-- downloads the matching release asset from `https://github.com/TillmanBuildsTech/5head/releases/download/v<version>/...`
+| Asset | Purpose |
+|-------|---------|
+| `install.js` | One-line installer (`curl … \| node`) |
+| `5head-mcp-osx-arm64` | macOS Apple Silicon binary |
+| `5head-mcp-osx-x64` | macOS Intel binary |
+| `5head-mcp-linux-x64` | Linux x64 binary |
+| `5head-mcp-linux-arm64` | Linux arm64 binary |
+| `5head-mcp-win-x64.exe` | Windows x64 binary |
 
-The native binary is stored inside the installed package directory as `bin/5head-mcp` or `bin/5head-mcp.exe`, and the wrapper executes it over stdio.
-The published npm tarball should contain the wrapper and installer only, not a prebundled native executable.
+`scripts/install.js` in this repo is the installer: it's self-contained, detects
+the platform, downloads the matching binary from the release, and installs it
+to `~/.5head/bin/`. `scripts/version.js` bumps the `<Version>` in the csproj
+files during the release.
 
-Local packaging proof:
-
-```sh
-dotnet publish src/FiveHead.Mcp.Host/FiveHead.Mcp.Host.csproj -c Release -r osx-arm64 --self-contained true /p:PublishAot=true -o ./publish/osx-arm64
-FIVEHEAD_MCP_LOCAL_BINARY="$PWD/publish/osx-arm64/5head-mcp" npm install ./npm
-./node_modules/.bin/5head-mcp
-```
-
-Release assumption: GitHub Releases must publish the exact filenames listed in the table above for the npm installer to succeed.
+Release assumption: GitHub Releases must publish the exact filenames listed in
+the table above for the one-line installer and the manual-download commands to
+succeed.
 
 ---
 
