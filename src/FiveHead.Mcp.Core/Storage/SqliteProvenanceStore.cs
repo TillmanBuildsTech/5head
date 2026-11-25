@@ -4,10 +4,14 @@ using Microsoft.Data.Sqlite;
 
 namespace FiveHead.Mcp.Core.Storage;
 
-public sealed class SqliteProvenanceStore(string databasePath, TimeProvider? timeProvider = null) : IProvenanceStore
+public sealed class SqliteProvenanceStore(
+    string databasePath,
+    TimeProvider? timeProvider = null,
+    TimeSpan? busyTimeout = null) : IProvenanceStore
 {
     private readonly string _databasePath = Path.GetFullPath(databasePath);
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+    private readonly TimeSpan _busyTimeout = busyTimeout ?? TimeSpan.FromSeconds(5);
 
     public async Task InitializeAsync(CancellationToken ct = default)
     {
@@ -47,31 +51,35 @@ public sealed class SqliteProvenanceStore(string databasePath, TimeProvider? tim
         await InitializeAsync(ct);
 
         await using var connection = await OpenConnectionAsync(ct);
-        return await ExecuteScalarAsync<long>(connection,
-            @"
-            INSERT INTO provenance (
-                target, mode, source_kind, content, fact_keys, thread_id, task_id,
-                created_at, confirmed_at, retracted_at, retracts_id)
-            VALUES (
-                @Target, @Mode, @SourceKind, @Content, @FactKeys, @ThreadId, @TaskId,
-                @CreatedAt, @ConfirmedAt, @RetractedAt, @RetractsId);
+        return await InsertRowAsync(connection, row, null, ct);
+    }
 
-            SELECT last_insert_rowid();",
-            new
+    public async Task<long> RecordAndRetractAsync(
+        ProvenanceRow row,
+        IReadOnlyList<FactRetraction> retractions,
+        CancellationToken ct = default)
+    {
+        await InitializeAsync(ct);
+
+        await using var connection = await OpenConnectionAsync(ct);
+        await ExecuteNonQueryAsync(connection, "BEGIN IMMEDIATE;", null, ct);
+        try
+        {
+            var id = await InsertRowAsync(connection, row, null, ct);
+            var now = _timeProvider.GetUtcNow().UtcDateTime;
+            foreach (var retraction in retractions)
             {
-                row.Target,
-                row.Mode,
-                row.SourceKind,
-                row.Content,
-                row.FactKeys,
-                row.ThreadId,
-                row.TaskId,
-                CreatedAt = row.CreatedAt,
-                ConfirmedAt = row.ConfirmedAt,
-                RetractedAt = row.RetractedAt,
-                RetractsId = row.RetractsId
-            },
-            ct);
+                await RetractRowAsync(connection, retraction.Id, retraction.Reason, now, null, ct);
+            }
+
+            await ExecuteNonQueryAsync(connection, "COMMIT;", null, ct);
+            return id;
+        }
+        catch
+        {
+            await RollbackAsync(connection);
+            throw;
+        }
     }
 
     public async Task ConfirmAsync(long id, CancellationToken ct = default)
@@ -79,11 +87,42 @@ public sealed class SqliteProvenanceStore(string databasePath, TimeProvider? tim
         await InitializeAsync(ct);
 
         await using var connection = await OpenConnectionAsync(ct);
-        var now = _timeProvider.GetUtcNow().UtcDateTime;
-        await ExecuteNonQueryAsync(connection,
-            "UPDATE provenance SET confirmed_at = @Now WHERE id = @Id AND confirmed_at IS NULL;",
-            new { Id = id, Now = now },
-            ct);
+        await ExecuteNonQueryAsync(connection, "BEGIN IMMEDIATE;", null, ct);
+        try
+        {
+            var row = await QuerySingleOrDefaultAsync(
+                connection,
+                SelectRowSql + " WHERE id = @Id;",
+                new { Id = id },
+                null,
+                ct);
+
+            if (row is null)
+            {
+                throw new InvalidOperationException($"Fact {id} does not exist.");
+            }
+
+            if (row.ConfirmedAt is null)
+            {
+                var now = _timeProvider.GetUtcNow().UtcDateTime;
+                var updated = await ExecuteNonQueryAsync(
+                    connection,
+                    "UPDATE provenance SET confirmed_at = @Now WHERE id = @Id AND confirmed_at IS NULL;",
+                    new { Id = id, Now = now },
+                    ct);
+                if (updated != 1 && row.ConfirmedAt is null)
+                {
+                    throw new InvalidOperationException($"Fact {id} could not be confirmed.");
+                }
+            }
+
+            await ExecuteNonQueryAsync(connection, "COMMIT;", null, ct);
+        }
+        catch
+        {
+            await RollbackAsync(connection);
+            throw;
+        }
     }
 
     public async Task RetractAsync(long id, string reason, CancellationToken ct = default)
@@ -91,51 +130,18 @@ public sealed class SqliteProvenanceStore(string databasePath, TimeProvider? tim
         await InitializeAsync(ct);
 
         await using var connection = await OpenConnectionAsync(ct);
-        await using var dbTransaction = await connection.BeginTransactionAsync(ct);
-        var transaction = (SqliteTransaction)dbTransaction;
-
-        var row = await QuerySingleOrDefaultAsync(
-            connection,
-            "SELECT id, target, mode, source_kind AS SourceKind, content, fact_keys AS FactKeys, thread_id AS ThreadId, task_id AS TaskId, created_at AS CreatedAt, confirmed_at AS ConfirmedAt, retracted_at AS RetractedAt, retracts_id AS RetractsId FROM provenance WHERE id = @Id;",
-            new { Id = id },
-            transaction,
-            ct);
-
-        if (row is null)
+        await ExecuteNonQueryAsync(connection, "BEGIN IMMEDIATE;", null, ct);
+        try
         {
-            throw new InvalidOperationException($"Fact {id} does not exist.");
+            var now = _timeProvider.GetUtcNow().UtcDateTime;
+            await RetractRowAsync(connection, id, reason, now, null, ct);
+            await ExecuteNonQueryAsync(connection, "COMMIT;", null, ct);
         }
-
-        var now = _timeProvider.GetUtcNow().UtcDateTime;
-        await ExecuteNonQueryAsync(
-            connection,
-            "UPDATE provenance SET retracted_at = @Now WHERE id = @Id AND retracted_at IS NULL;",
-            new { Id = id, Now = now },
-            ct,
-            transaction);
-
-        await ExecuteNonQueryAsync(
-            connection,
-            @"
-            INSERT INTO provenance (
-                target, mode, source_kind, content, fact_keys, thread_id, task_id,
-                created_at, confirmed_at, retracted_at, retracts_id)
-            VALUES (
-                @Target, @Mode, @SourceKind, @Content, NULL, NULL, NULL,
-                @CreatedAt, NULL, NULL, @RetractsId);",
-            new
-            {
-                Target = row.Target,
-                Mode = "retract",
-                SourceKind = "system",
-                Content = reason,
-                CreatedAt = now,
-                RetractsId = id
-            },
-            ct,
-            transaction);
-
-        await transaction.CommitAsync(ct);
+        catch
+        {
+            await RollbackAsync(connection);
+            throw;
+        }
     }
 
     public async Task<ProvenanceRow?> GetByIdAsync(long id, CancellationToken ct = default)
@@ -145,7 +151,7 @@ public sealed class SqliteProvenanceStore(string databasePath, TimeProvider? tim
         await using var connection = await OpenConnectionAsync(ct);
         return await QuerySingleOrDefaultAsync(
             connection,
-            "SELECT id, target, mode, source_kind AS SourceKind, content, fact_keys AS FactKeys, thread_id AS ThreadId, task_id AS TaskId, created_at AS CreatedAt, confirmed_at AS ConfirmedAt, retracted_at AS RetractedAt, retracts_id AS RetractsId FROM provenance WHERE id = @Id;",
+            SelectRowSql + " WHERE id = @Id;",
             new { Id = id },
             null,
             ct);
@@ -187,10 +193,126 @@ public sealed class SqliteProvenanceStore(string databasePath, TimeProvider? tim
         return rows;
     }
 
+    private const string SelectRowSql =
+        "SELECT id, target, mode, source_kind AS SourceKind, content, fact_keys AS FactKeys, thread_id AS ThreadId, task_id AS TaskId, created_at AS CreatedAt, confirmed_at AS ConfirmedAt, retracted_at AS RetractedAt, retracts_id AS RetractsId FROM provenance";
+
+    private async Task<long> InsertRowAsync(
+        SqliteConnection connection,
+        ProvenanceRow row,
+        SqliteTransaction? transaction,
+        CancellationToken ct)
+    {
+        return await ExecuteScalarAsync<long>(connection,
+            @"
+            INSERT INTO provenance (
+                target, mode, source_kind, content, fact_keys, thread_id, task_id,
+                created_at, confirmed_at, retracted_at, retracts_id)
+            VALUES (
+                @Target, @Mode, @SourceKind, @Content, @FactKeys, @ThreadId, @TaskId,
+                @CreatedAt, @ConfirmedAt, @RetractedAt, @RetractsId);
+
+            SELECT last_insert_rowid();",
+            new
+            {
+                row.Target,
+                row.Mode,
+                row.SourceKind,
+                row.Content,
+                row.FactKeys,
+                row.ThreadId,
+                row.TaskId,
+                CreatedAt = row.CreatedAt,
+                ConfirmedAt = row.ConfirmedAt,
+                RetractedAt = row.RetractedAt,
+                RetractsId = row.RetractsId
+            },
+            ct,
+            transaction);
+    }
+
+    private async Task RetractRowAsync(
+        SqliteConnection connection,
+        long id,
+        string reason,
+        DateTime now,
+        SqliteTransaction? transaction,
+        CancellationToken ct)
+    {
+        var row = await QuerySingleOrDefaultAsync(
+            connection,
+            SelectRowSql + " WHERE id = @Id;",
+            new { Id = id },
+            transaction,
+            ct);
+
+        if (row is null)
+        {
+            throw new InvalidOperationException($"Fact {id} does not exist.");
+        }
+
+        if (row.RetractedAt is not null)
+        {
+            throw new InvalidOperationException($"Fact {id} is already retracted.");
+        }
+
+        var updated = await ExecuteNonQueryAsync(
+            connection,
+            "UPDATE provenance SET retracted_at = @Now WHERE id = @Id AND retracted_at IS NULL;",
+            new { Id = id, Now = now },
+            ct,
+            transaction);
+        if (updated != 1)
+        {
+            throw new InvalidOperationException($"Fact {id} is already retracted.");
+        }
+
+        await ExecuteNonQueryAsync(
+            connection,
+            @"
+            INSERT INTO provenance (
+                target, mode, source_kind, content, fact_keys, thread_id, task_id,
+                created_at, confirmed_at, retracted_at, retracts_id)
+            VALUES (
+                @Target, @Mode, @SourceKind, @Content, NULL, NULL, NULL,
+                @CreatedAt, NULL, NULL, @RetractsId);",
+            new
+            {
+                Target = row.Target,
+                Mode = "retract",
+                SourceKind = "system",
+                Content = reason,
+                CreatedAt = now,
+                RetractsId = id
+            },
+            ct,
+            transaction);
+    }
+
+    private static async Task RollbackAsync(SqliteConnection connection)
+    {
+        try
+        {
+            await ExecuteNonQueryAsync(connection, "ROLLBACK;", null, CancellationToken.None);
+        }
+        catch (SqliteException)
+        {
+        }
+    }
+
     private async Task<SqliteConnection> OpenConnectionAsync(CancellationToken ct)
     {
-        var connection = new SqliteConnection($"Data Source={_databasePath}");
+        var builder = new SqliteConnectionStringBuilder
+        {
+            DataSource = _databasePath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            DefaultTimeout = Math.Max(1, (int)Math.Ceiling(_busyTimeout.TotalSeconds)),
+            Pooling = true
+        };
+        var connection = new SqliteConnection(builder.ConnectionString);
         await connection.OpenAsync(ct);
+        await using var pragma = connection.CreateCommand();
+        pragma.CommandText = $"PRAGMA busy_timeout={Math.Max(0, (int)_busyTimeout.TotalMilliseconds)};";
+        await pragma.ExecuteNonQueryAsync(ct);
         return connection;
     }
 
@@ -207,7 +329,7 @@ public sealed class SqliteProvenanceStore(string databasePath, TimeProvider? tim
             && string.Equals(fact.Predicate, predicate, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static async Task ExecuteNonQueryAsync(
+    private static async Task<int> ExecuteNonQueryAsync(
         SqliteConnection connection,
         string sql,
         object? parameters,
@@ -215,7 +337,7 @@ public sealed class SqliteProvenanceStore(string databasePath, TimeProvider? tim
         SqliteTransaction? transaction = null)
     {
         await using var command = CreateCommand(connection, sql, parameters, transaction);
-        await command.ExecuteNonQueryAsync(ct);
+        return await command.ExecuteNonQueryAsync(ct);
     }
 
     private static async Task<T> ExecuteScalarAsync<T>(

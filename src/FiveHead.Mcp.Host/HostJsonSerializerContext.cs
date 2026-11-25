@@ -6,6 +6,7 @@ namespace FiveHead.Mcp.Host;
 
 [JsonSourceGenerationOptions(GenerationMode = JsonSourceGenerationMode.Metadata, PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(WriteMemoryResult))]
+[JsonSerializable(typeof(MemoryReadPayload))]
 [JsonSerializable(typeof(ContradictionCheckResult))]
 [JsonSerializable(typeof(ContradictionCheckPayload))]
 [JsonSerializable(typeof(ListFactsPayload))]

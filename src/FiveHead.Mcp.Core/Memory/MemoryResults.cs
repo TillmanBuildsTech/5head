@@ -7,6 +7,16 @@ public sealed class WriteMemoryResult
 {
     public long     ProvenanceId { get; init; }
     public string[] Warnings     { get; init; } = [];
+
+    /// <summary>SHA-256 of the file after the write. Pass it back as <c>expectedContentHash</c>.</summary>
+    public string   ContentHash  { get; init; } = "";
+}
+
+public sealed class MemoryReadPayload
+{
+    public string File        { get; init; } = "";
+    public string ContentHash { get; init; } = "";
+    public int    CharCount   { get; init; }
 }
 
 /// <summary>Result of a check_contradictions call.</summary>

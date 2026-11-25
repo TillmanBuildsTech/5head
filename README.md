@@ -137,7 +137,7 @@ That global path is an implementation fallback, not the primary V1 product surfa
 | Tool | Description |
 |------|-------------|
 | `read_memory` | Read SOUL, MEMORY, or USER file |
-| `write_memory` | Append, replace, or remove content (`replace` is the V1 manual compaction path; checked against size limit + contradictions) |
+| `write_memory` | Append, replace, or remove content (`replace` is the V1 manual compaction path; checked against size limit + contradictions). Optional `expectedContentHash` fails the write if the file changed since it was read |
 | `check_contradictions` | Dry-run conflict detection before a write |
 | `list_facts` | List active/confirmed/uncertain/retracted facts |
 | `confirm_fact` | Explicitly confirm a provenance row |
@@ -145,6 +145,10 @@ That global path is an implementation fallback, not the primary V1 product surfa
 | `get_provenance` | Full history for a subject+predicate pair |
 
 For V1, compaction is intentionally narrow: use an explicit `replace` write when a memory file needs cleanup or consolidation. 5head records the replacement in provenance and retracts facts from the prior file state when they no longer appear. It does not run automated compaction or background cleanup.
+
+`read_memory` returns the file text plus a `contentHash` (SHA-256 of the UTF-8 bytes). Pass that hash back as `expectedContentHash` on the next `write_memory`. If another writer landed first, the call fails and the file is left as-is. Writes also take a per-file cross-process lock, and the file is replaced by a temp-file rename in the same step as the provenance transaction (the previous bytes are restored if the database write fails).
+
+`remove` retracts a fact only when that fact is no longer in the file after the string removal. A remove string that does not match the file does not retract a fact that is still there. A partial removal that changes a fact line retracts the old fact and records the fact the file now contains.
 
 ---
 
@@ -184,12 +188,16 @@ MCP Client (Claude Code / Copilot / Cursor)
 - **Snapshot build** — every PR against `main` runs `ci.yml`: build + test +
   Native AOT for all platforms, and publishes the binaries as a rolling
   `snapshot` **pre-release** for trying unreleased builds.
-- **Production release** — merging that PR to `main` runs `release.yml`: it
-  rebuilds the exact release binaries, publishes a GitHub Release `v<version>`
-  (with the one-line installer and the platform binaries as assets), then bumps
-  the version (patch by default; `[release:minor]` / `[release:major]` in the
-  merge message bumps that part) and opens a release PR carrying the bump back
-  to `main` (main is PR-only, so the bot cannot push directly).
+- **Production release** — merging to `main` runs `release.yml`: it rebuilds
+  the exact release binaries, publishes a GitHub Release `v<version>` (with
+  the one-line installer and the platform binaries as assets, marked latest),
+  then bumps the version (patch by default; `[release:minor]` /
+  `[release:major]` in the merge message bumps that part) and opens a release
+  PR carrying the bump back to `main` (main is PR-only, so the bot cannot push
+  directly). The bump PR does **not** publish a GitHub Release. An empty
+  stable release would become `releases/latest` and the installer URL would
+  404. Merging the bump is skipped because its commit message is
+  `chore(release): bump`.
 
 There is **no npm package and no registry** — distribution is entirely through
 GitHub Releases. Every release carries:
@@ -225,6 +233,13 @@ Requirements: .NET 9 SDK.
 
 ---
 
+## Shared state
+
+Curated memory stays in this process. Agents that must share a work queue
+without lost updates use the separate service in [`state-api/`](state-api/README.md):
+Postgres, version-checked matter updates, expiring claims, and a thin MCP
+wrapper. It does not write `SOUL.md` / `MEMORY.md` / `USER.md`.
+
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE). Copyright 2026 TillmanBuildsTech / Brandon Tillman.

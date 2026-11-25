@@ -18,6 +18,7 @@ public interface IMemoryService
         string      sourceKind,
         string?     threadId = null,
         string?     taskId   = null,
+        string?     expectedContentHash = null,
         CancellationToken ct = default);
 
     Task<ContradictionCheckResult> CheckContradictionsAsync(

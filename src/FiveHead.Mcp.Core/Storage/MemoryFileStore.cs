@@ -1,3 +1,4 @@
+using System.Text;
 using FiveHead.Mcp.Core.Memory;
 
 namespace FiveHead.Mcp.Core.Storage;
@@ -5,6 +6,9 @@ namespace FiveHead.Mcp.Core.Storage;
 public sealed class MemoryFileStore(string memoryRootPath) : IMemoryFileStore
 {
     private readonly string _memoryRootPath = Path.GetFullPath(memoryRootPath);
+    private static readonly UTF8Encoding Utf8 = new(encoderShouldEmitUTF8Identifier: false);
+
+    public string RootPath => _memoryRootPath;
 
     public async Task<string> ReadAsync(MemoryFile file, CancellationToken ct = default)
     {
@@ -28,7 +32,43 @@ public sealed class MemoryFileStore(string memoryRootPath) : IMemoryFileStore
             throw new SizeLimitExceededException(file, next.Length, limit);
         }
 
-        await File.WriteAllTextAsync(GetPath(file), next, ct);
+        await ReplaceAllAsync(file, next, ct);
+    }
+
+    public async Task ReplaceAllAsync(MemoryFile file, string content, CancellationToken ct = default)
+    {
+        await EnsureInitializedAsync(ct);
+
+        var path = GetPath(file);
+        var directory = Path.GetDirectoryName(path) ?? _memoryRootPath;
+        var tmp = Path.Combine(directory, $".{MemoryLimits.FileName(file)}.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            await using (var stream = new FileStream(
+                tmp,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 4096,
+                FileOptions.Asynchronous))
+            {
+                await using var writer = new StreamWriter(stream, Utf8);
+                await writer.WriteAsync((content ?? string.Empty).AsMemory(), ct);
+                await writer.FlushAsync(ct);
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(tmp, path, overwrite: true);
+        }
+        catch
+        {
+            if (File.Exists(tmp))
+            {
+                File.Delete(tmp);
+            }
+
+            throw;
+        }
     }
 
     public Task EnsureInitializedAsync(CancellationToken ct = default)
@@ -37,9 +77,17 @@ public sealed class MemoryFileStore(string memoryRootPath) : IMemoryFileStore
         foreach (var file in Enum.GetValues<MemoryFile>())
         {
             var path = GetPath(file);
-            if (!File.Exists(path))
+            if (File.Exists(path))
             {
-                File.WriteAllText(path, string.Empty);
+                continue;
+            }
+
+            try
+            {
+                using var created = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            }
+            catch (IOException) when (File.Exists(path))
+            {
             }
         }
 

@@ -31,12 +31,22 @@ public sealed partial class MemoryService(
         string sourceKind,
         string? threadId = null,
         string? taskId = null,
+        string? expectedContentHash = null,
         CancellationToken ct = default)
     {
+        content ??= string.Empty;
+        await using var writeLock = await MemoryWriteLock.AcquireAsync(_fileStore.RootPath, ct);
         await InitializeAsync(ct);
 
         var targetFile = MemoryLimits.FileName(file);
-        var trackedFacts = mode == WriteMode.Remove ? ExtractFacts(content) : ExtractFacts(content);
+        var current = await _fileStore.ReadAsync(file, ct);
+        var currentHash = MemoryContentHash.Compute(current);
+        if (!string.IsNullOrWhiteSpace(expectedContentHash)
+            && !MemoryContentHash.Matches(expectedContentHash, currentHash))
+        {
+            throw new StaleWriteException(file, MemoryContentHash.Normalize(expectedContentHash), currentHash);
+        }
+
         var conflicts = mode == WriteMode.Remove
             ? []
             : await FindConflictsAsync(file, content, ignoreTarget: mode == WriteMode.Replace ? targetFile : null, ct);
@@ -46,37 +56,52 @@ public sealed partial class MemoryService(
             throw new ContradictionException(conflicts);
         }
 
+        var next = MemoryFileStore.ApplyMode(current, mode, content);
         var existingRows = await _provenanceStore.ListAsync(targetFile, ct);
+        var recordedFacts = RecordedFacts(mode, content, next, targetFile, existingRows, out var retractions);
+
         await _fileStore.WriteAsync(file, mode, content, ct);
 
         var now = _timeProvider.GetUtcNow().UtcDateTime;
-        var provenanceId = await _provenanceStore.RecordAsync(new ProvenanceRow
+        long provenanceId;
+        try
         {
-            Target = targetFile,
-            Mode = mode.ToString().ToLowerInvariant(),
-            SourceKind = sourceKind,
-            Content = content,
-            FactKeys = trackedFacts.Count == 0
-                ? null
-                : JsonSerializer.Serialize(trackedFacts.ToArray(), CoreJsonSerializerContext.Default.FactKeyArray),
-            ThreadId = threadId,
-            TaskId = taskId,
-            CreatedAt = now
-        }, ct);
-
-        if (mode == WriteMode.Replace)
-        {
-            await RetractRowsMissingFromReplacementAsync(existingRows, trackedFacts, targetFile, ct);
+            provenanceId = await _provenanceStore.RecordAndRetractAsync(new ProvenanceRow
+            {
+                Target = targetFile,
+                Mode = mode.ToString().ToLowerInvariant(),
+                SourceKind = sourceKind,
+                Content = content,
+                FactKeys = recordedFacts.Count == 0
+                    ? null
+                    : JsonSerializer.Serialize(recordedFacts.ToArray(), CoreJsonSerializerContext.Default.FactKeyArray),
+                ThreadId = threadId,
+                TaskId = taskId,
+                CreatedAt = now
+            }, retractions, ct);
         }
-        else if (mode == WriteMode.Remove)
+        catch (Exception provenanceFailure)
         {
-            await RetractRemovedRowsAsync(existingRows, trackedFacts, ct);
+            try
+            {
+                await _fileStore.ReplaceAllAsync(file, current, ct);
+            }
+            catch (Exception restoreFailure)
+            {
+                throw new IOException(
+                    $"Provenance update failed and restoring {targetFile} also failed. The file and the provenance database may have drifted.",
+                    new AggregateException(provenanceFailure, restoreFailure));
+            }
+
+            throw;
         }
 
+        var written = await _fileStore.ReadAsync(file, ct);
         return new WriteMemoryResult
         {
             ProvenanceId = provenanceId,
-            Warnings = trackedFacts.Count == 0
+            ContentHash = MemoryContentHash.Compute(written),
+            Warnings = recordedFacts.Count == 0 && retractions.Count == 0
                 ? ["No structured facts were extracted from this write."]
                 : []
         };
@@ -119,12 +144,14 @@ public sealed partial class MemoryService(
 
     public async Task ConfirmFactAsync(long provenanceId, CancellationToken ct = default)
     {
+        await using var writeLock = await MemoryWriteLock.AcquireAsync(_fileStore.RootPath, ct);
         await InitializeAsync(ct);
         await _provenanceStore.ConfirmAsync(provenanceId, ct);
     }
 
     public async Task RetractFactAsync(long provenanceId, string reason, CancellationToken ct = default)
     {
+        await using var writeLock = await MemoryWriteLock.AcquireAsync(_fileStore.RootPath, ct);
         await InitializeAsync(ct);
         await _provenanceStore.RetractAsync(provenanceId, reason, ct);
     }
@@ -187,12 +214,25 @@ public sealed partial class MemoryService(
         return conflicts;
     }
 
-    private async Task RetractRowsMissingFromReplacementAsync(
-        IReadOnlyList<ProvenanceRow> existingRows,
-        IReadOnlyList<FactKey> replacementFacts,
+    private List<FactKey> RecordedFacts(
+        WriteMode mode,
+        string content,
+        string next,
         string targetFile,
-        CancellationToken ct)
+        IReadOnlyList<ProvenanceRow> existingRows,
+        out List<FactRetraction> retractions)
     {
+        retractions = [];
+        if (mode == WriteMode.Append)
+        {
+            return ExtractFacts(content);
+        }
+
+        var surviving = mode == WriteMode.Remove ? ExtractFacts(next) : ExtractFacts(content);
+        var reason = mode == WriteMode.Remove
+            ? "Removed from active memory."
+            : $"Superseded by replace in {targetFile}.";
+
         foreach (var row in existingRows.Select(ApplyStatus).Where(row => row.Status is FactStatus.Active or FactStatus.Confirmed))
         {
             var rowFacts = DeserializeFacts(row);
@@ -201,32 +241,30 @@ public sealed partial class MemoryService(
                 continue;
             }
 
-            var stillPresent = rowFacts.All(existingFact => replacementFacts.Any(candidate => FactsMatch(existingFact, candidate)));
+            var stillPresent = rowFacts.All(existingFact => surviving.Any(candidate => FactsMatch(existingFact, candidate)));
             if (!stillPresent)
             {
-                await _provenanceStore.RetractAsync(row.Id, $"Superseded by replace in {targetFile}.", ct);
+                retractions.Add(new FactRetraction(row.Id, reason));
             }
         }
-    }
 
-    private async Task RetractRemovedRowsAsync(
-        IReadOnlyList<ProvenanceRow> existingRows,
-        IReadOnlyList<FactKey> removedFacts,
-        CancellationToken ct)
-    {
-        if (removedFacts.Count == 0)
+        if (mode == WriteMode.Replace)
         {
-            return;
+            return surviving;
         }
 
+        var kept = new List<FactKey>();
         foreach (var row in existingRows.Select(ApplyStatus).Where(row => row.Status is FactStatus.Active or FactStatus.Confirmed))
         {
-            var rowFacts = DeserializeFacts(row);
-            if (rowFacts.Count > 0 && rowFacts.All(existingFact => removedFacts.Any(removed => FactsMatch(existingFact, removed))))
+            if (retractions.Any(retraction => retraction.Id == row.Id))
             {
-                await _provenanceStore.RetractAsync(row.Id, "Removed from active memory.", ct);
+                continue;
             }
+
+            kept.AddRange(DeserializeFacts(row));
         }
+
+        return surviving.Where(fact => !kept.Any(existing => FactsMatch(existing, fact))).ToList();
     }
 
     private ProvenanceRow ApplyStatus(ProvenanceRow row) => row with

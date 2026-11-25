@@ -25,3 +25,7 @@ Thumbs.db
 *.db
 *.db-shm
 *.db-wal
+
+# local secrets for the shared-state service
+.env
+state-api/.env

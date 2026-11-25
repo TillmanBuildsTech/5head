@@ -19,6 +19,22 @@ jobs:
   test:
     name: Test (.NET 9)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: state
+          POSTGRES_PASSWORD: state
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U state -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      STATE_API_TEST_CONNECTION: Host=localhost;Port=5432;Username=state;Password=state;Database=postgres
     steps:
       - uses: actions/checkout@v4
 
@@ -119,17 +135,25 @@ jobs:
       - name: Rename binaries to canonical asset names
         shell: bash
         run: |
+          # Artifact directories are named 5head-mcp-<rid> (the upload name),
+          # while the binary inside is still `5head-mcp`. Using the directory
+          # name as the rid produced 5head-mcp-5head-mcp-linux-x64.
           cd snapshot-assets
           for d in */; do
-            rid="${d%/}"                       # artifact dir name == rid
-            if [[ ! -e "$rid/5head-mcp" && ! -e "$rid/5head-mcp.exe" ]]; then
-              echo "skip $rid (no binary)"
+            name="${d%/}"
+            if [[ ! -e "$name/5head-mcp" && ! -e "$name/5head-mcp.exe" ]]; then
+              echo "skip $name (no binary)"
               continue
             fi
-            if [[ -f "$rid/5head-mcp.exe" ]]; then
-              mv "$rid/5head-mcp.exe" "$rid/5head-mcp-$rid.exe"
+            if [[ "$name" == 5head-mcp-* ]]; then
+              rid="${name#5head-mcp-}"
             else
-              mv "$rid/5head-mcp" "$rid/5head-mcp-$rid"
+              rid="$name"
+            fi
+            if [[ -f "$name/5head-mcp.exe" ]]; then
+              mv "$name/5head-mcp.exe" "$name/5head-mcp-$rid.exe"
+            else
+              mv "$name/5head-mcp" "$name/5head-mcp-$rid"
             fi
           done
           ls -R

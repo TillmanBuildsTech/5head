@@ -33,11 +33,19 @@ public sealed class MemoryMcpSurfaceTests : IDisposable
     {
         var write = await _tools.write_memory("memory", "append", "- language: C#", "test");
 
-        var content = await _tools.read_memory("MEMORY");
+        var read = await _tools.read_memory("MEMORY");
         var facts = await _tools.list_facts(file: "memory");
+        var text = Assert.IsType<TextContentBlock>(Assert.Single(read.Content));
 
         Assert.NotEqual(true, write.IsError);
-        Assert.Equal("- language: C#", content);
+        Assert.NotEqual(true, read.IsError);
+        Assert.Equal("- language: C#", text.Text);
+        AssertStructuredPayload(read, payload =>
+        {
+            Assert.Equal("MEMORY.md", payload.GetProperty("file").GetString());
+            Assert.Equal(64, payload.GetProperty("contentHash").GetString()!.Length);
+            Assert.Equal(MemoryContentHash.Compute("- language: C#"), payload.GetProperty("contentHash").GetString());
+        });
         Assert.NotEqual(true, facts.IsError);
     }
 

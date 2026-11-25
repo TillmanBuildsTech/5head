@@ -1,5 +1,9 @@
 # Packaging Verification
 
+> Historical note: the npm wrapper described below was removed. Install is the
+> GitHub Release installer in the README (`scripts/install.js`). This file is
+> not the current packaging contract.
+
 ## Goal
 
 Prove checklist item 8 end-to-end for the current V1 packaging shape:
