@@ -136,7 +136,8 @@ configuration does not silently drop back to local-only.
 `stateAgent`. The environment wins. Prefer the token in the client `env` block
 so it is not committed.
 
-A home-lab Hermes agent talks to the API on localhost. The cloud agent, off
+A home-lab Hermes agent talks to the API on the host port published by
+`docker-compose.ports.yml` (the smoke test uses 18080). The cloud agent, off
 the LAN, uses the Cloudflare Tunnel hostname. Both run `5head-mcp`. Only the
 env block changes:
 
@@ -146,7 +147,7 @@ env block changes:
     "memory": {
       "command": "5head-mcp",
       "env": {
-        "FIVEHEAD_STATE_URL": "http://127.0.0.1:8080",
+        "FIVEHEAD_STATE_URL": "http://127.0.0.1:18080",
         "FIVEHEAD_STATE_TOKEN": "replace-with-a-long-random-token",
         "FIVEHEAD_STATE_AGENT": "hermes-lab"
       }
@@ -193,7 +194,7 @@ Optional V1 config lives at `.agent-memory/config.yaml` and supports only these 
 ```yaml
 stalenessThresholdDays: 30
 provenanceDbPath: .cache/provenance.db
-stateApiUrl: http://127.0.0.1:8080
+stateApiUrl: http://127.0.0.1:18080
 stateAgent: hermes-lab
 ```
 
@@ -315,9 +316,13 @@ Requirements: .NET 9 SDK.
 
 ## Deploy on Coolify
 
-The only compose file is [`docker-compose.yml`](docker-compose.yml) at the
-repository root. Import the repo as a Docker Compose resource with base
-directory `/` and compose location `docker-compose.yml`.
+Import the repo as a Docker Compose resource with base directory `/` and
+compose location [`docker-compose.yml`](docker-compose.yml). That file does
+not publish a host port. The API only `expose`s container port 8080, and
+Coolify's proxy routes the domain to that container port. Postgres has no
+host port either. [`docker-compose.ports.yml`](docker-compose.ports.yml) is
+for a local or direct port only. It is not named `docker-compose.override.yml`,
+so Compose and Coolify leave it unloaded.
 
 Coolify generates these and keeps them across deploys. Leave the local
 defaults unset so the generated values win:
@@ -329,10 +334,10 @@ defaults unset so the generated values win:
 | `SERVICE_PASSWORD_64_FIVEHEAD` | Bearer token. The API reads it as `STATE_AUTH_TOKEN` |
 | `SERVICE_URL_API_8080` | Public URL. The proxy sends it to container port 8080 |
 
-On the `api` service, set the domain to `https://state.example.com:8080`.
-The `:8080` tells Coolify which container port to use. Browsers still use
-443. Do not give `postgres` a domain or a host port. Its data is the named
-volume `state-postgres`.
+On the `api` service, set the domain to `https://5head-state.example.com:8080`.
+The `:8080` tells Coolify's proxy to target container port 8080. No host port
+is needed. Browsers still use 443. Do not give `postgres` a domain or a host
+port. Its data is the named volume `state-postgres`.
 
 The API process applies `src/FiveHead.State.Api/Migrations` before it listens.
 `GET /health` does not need the token and pings Postgres, so a healthy check
@@ -348,7 +353,7 @@ page. The URL is the public hostname without the container port:
     "memory": {
       "command": "5head-mcp",
       "env": {
-        "FIVEHEAD_STATE_URL": "https://state.example.com",
+        "FIVEHEAD_STATE_URL": "https://5head-state.example.com",
         "FIVEHEAD_STATE_TOKEN": "the-SERVICE_PASSWORD_64_FIVEHEAD-value",
         "FIVEHEAD_STATE_AGENT": "cloud"
       }
@@ -357,20 +362,26 @@ page. The URL is the public hostname without the container port:
 }
 ```
 
-A lab agent on the same machine can use `http://127.0.0.1:8080` instead of
-the public hostname. Use a different `FIVEHEAD_STATE_AGENT` per agent.
+The compose file does not bind a host port, so a lab agent on the Coolify
+machine uses that same public hostname. Use a different `FIVEHEAD_STATE_AGENT`
+per agent.
 
 ### Local smoke test
 
 From the repository root, with Docker Compose v2. No `.env` is required.
-The local defaults are user `state`, password `state`, token
-`local-dev-token`, and API port 8080. Those are for a private smoke test.
-Copy [`.env.example`](.env.example) to `.env` to replace them.
+The local defaults are user `state`, password `state`, and token
+`local-dev-token`. Those are for a private smoke test. Copy
+[`.env.example`](.env.example) to `.env` to replace them.
+
+`docker-compose.yml` publishes no host port. Add
+[`docker-compose.ports.yml`](docker-compose.ports.yml) and set
+`FIVEHEAD_HOST_PORT`. There is no default host port. Compose exits if the
+variable is unset.
 
 ```sh
-docker compose up --build -d
-curl -fsS http://127.0.0.1:8080/health
-docker compose down
+FIVEHEAD_HOST_PORT=18080 docker compose -f docker-compose.yml -f docker-compose.ports.yml up --build -d
+curl -fsS http://127.0.0.1:18080/health
+FIVEHEAD_HOST_PORT=18080 docker compose -f docker-compose.yml -f docker-compose.ports.yml down
 ```
 
 `curl` prints `{"status":"ok"}`. Postgres is only reachable as the hostname
