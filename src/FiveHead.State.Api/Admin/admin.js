@@ -1,5 +1,27 @@
 (() => {
+  "use strict";
+
+  const DEFAULT_ROUTE = "#/attention";
+  const PAGE_LIMIT = 200;
+  const OTHER = "__other__";
+  const FIELDS = [
+    ["status", "Status"],
+    ["owner", "Owner"],
+    ["nextStep", "Next step"]
+  ];
+  const LIST_COLUMNS = [
+    ["title", "Title"],
+    ["status", "Status"],
+    ["owner", "Owner"],
+    ["nextStep", "Next step"],
+    ["claim", "Claim"],
+    ["version", "Version"],
+    ["updated", "Updated"]
+  ];
+
   const loginView = document.querySelector("#login");
+  const loginForm = document.querySelector("#login-form");
+  const tokenInput = document.querySelector("#token");
   const loginError = document.querySelector("#login-error");
   const appView = document.querySelector("#app");
   const main = document.querySelector("#main");
@@ -7,6 +29,13 @@
 
   let signedIn = false;
   let flash = null;
+  let focusMain = false;
+  // Unsaved matter edits. Kept in memory only, so a session expiry does not lose them.
+  let draft = null;
+  let lastMattersHash = "#/matters";
+  let listSort = { key: "updated", dir: "desc" };
+
+  class SessionExpired extends Error {}
 
   function el(tag, props, kids) {
     const node = document.createElement(tag);
@@ -27,17 +56,34 @@
     while (node.firstChild) node.removeChild(node.firstChild);
   }
 
+  function unique(values) {
+    return [...new Set(values.filter((value) => value != null && value !== ""))];
+  }
+
+  function navigate(hash) {
+    // Setting the same hash does not fire hashchange, so re-render directly.
+    if (location.hash === hash) render();
+    else location.hash = hash;
+  }
+
   function parseRoute() {
-    const raw = (location.hash || "#/overview").replace(/^#/, "");
+    const raw = (location.hash || DEFAULT_ROUTE).replace(/^#/, "");
     const split = raw.indexOf("?");
     const path = (split === -1 ? raw : raw.slice(0, split)).replace(/^\/+|\/+$/g, "");
     const params = new URLSearchParams(split === -1 ? "" : raw.slice(split + 1));
     const parts = path.split("/").filter(Boolean);
     if (parts[0] === "matters" && parts[1]) {
-      return { name: "matter", id: decodeURIComponent(parts[1]), params };
+      let id = "";
+      try {
+        id = decodeURIComponent(parts[1]);
+      } catch {
+        return { name: "attention", params };
+      }
+      return { name: "matter", id, params };
     }
     if (parts[0] === "matters") return { name: "matters", params };
-    return { name: "overview", params };
+    if (parts[0] === "overview") return { name: "overview", params };
+    return { name: "attention", params };
   }
 
   function request(path, options = {}) {
@@ -62,17 +108,29 @@
     }
   }
 
+  // Every API call goes through here so a 401 always becomes a sign-in prompt.
+  async function api(path, options = {}) {
+    const response = await request(path, options);
+    const body = await readJson(response);
+    if (response.status === 401) throw new SessionExpired();
+    return { ok: response.ok, status: response.status, body };
+  }
+
+  function expectOk(result, fallback) {
+    if (!result.ok) throw new Error((result.body && result.body.message) || fallback);
+    return result.body;
+  }
+
   function showLogin(message) {
     signedIn = false;
     appView.classList.add("hidden");
     loginView.classList.remove("hidden");
-    if (message) {
-      loginError.textContent = message;
-      loginError.classList.remove("hidden");
-    } else {
-      loginError.textContent = "";
-      loginError.classList.add("hidden");
-    }
+    loginError.textContent = message || "";
+    loginError.classList.toggle("hidden", !message);
+  }
+
+  function expireSession() {
+    showLogin("Your session expired. Sign in again. Unsaved edits are kept and will come back.");
   }
 
   function showApp() {
@@ -87,11 +145,26 @@
     });
   }
 
-  function formatTime(iso) {
-    if (!iso) return "—";
-    const date = new Date(iso);
-    if (Number.isNaN(date.getTime())) return String(iso);
+  function utcStamp(date) {
     return date.toISOString().replace("T", " ").slice(0, 16) + " UTC";
+  }
+
+  function relative(ms) {
+    const diff = ms - Date.now();
+    const abs = Math.abs(diff);
+    if (abs < 60000) return diff >= 0 ? "in under a minute" : "just now";
+    let text;
+    if (abs < 3600000) text = Math.round(abs / 60000) + "m";
+    else if (abs < 86400000) text = Math.round(abs / 3600000) + "h";
+    else text = Math.round(abs / 86400000) + "d";
+    return diff >= 0 ? "in " + text : text + " ago";
+  }
+
+  // Relative time for scanning, with the exact UTC time on hover and in the datetime attribute.
+  function timeEl(iso) {
+    const date = iso ? new Date(iso) : null;
+    if (!date || Number.isNaN(date.getTime())) return el("span", { class: "muted" }, ["—"]);
+    return el("time", { datetime: date.toISOString(), title: utcStamp(date) }, [relative(date.getTime())]);
   }
 
   function statusClass(status) {
@@ -107,9 +180,17 @@
   }
 
   function banner(message, tone, extra) {
-    const node = el("div", { class: tone === "bad" ? "banner bad" : "banner", role: "status" }, [message]);
+    const node = el("div", { class: tone === "bad" ? "banner bad" : tone === "ok" ? "banner ok" : "banner", role: "status" }, [message]);
     if (extra) node.append(extra);
     return node;
+  }
+
+  function inlineError(container, message) {
+    container.querySelectorAll("[data-inline]").forEach((node) => node.remove());
+    const node = banner(message, "bad");
+    node.setAttribute("role", "alert");
+    node.dataset.inline = "1";
+    container.prepend(node);
   }
 
   function takeFlash() {
@@ -118,347 +199,624 @@
     return current;
   }
 
-  async function ensureOk(response) {
-    if (response.status === 401) {
-      showLogin("Sign in again. The session is missing or expired.");
-      return null;
-    }
-    return response;
+  function th(label, attrs) {
+    return el("th", Object.assign({ scope: "col" }, attrs || {}), [label]);
   }
 
-  function renderOverview(body) {
+  function td(content, cls) {
+    return el("td", cls ? { class: cls } : null, [content]);
+  }
+
+  function tr(cells) {
+    return el("tr", null, cells);
+  }
+
+  function dataTable(caption, headers, rows) {
+    return el("div", { class: "table-wrap" }, [
+      el("table", null, [
+        el("caption", { class: "sr" }, [caption]),
+        el("thead", null, [el("tr", null, headers)]),
+        el("tbody", null, rows)
+      ])
+    ]);
+  }
+
+  function panel(title, note, body) {
+    const section = el("section", { class: "card panel" }, [el("h2", null, [title])]);
+    if (note) section.append(el("p", { class: "section-note muted" }, [note]));
+    if (body) section.append(body);
+    return section;
+  }
+
+  // Owners and statuses for suggestions. Statuses come from the full overview; owners from recent matters.
+  async function loadCatalog() {
+    const [overview, list] = await Promise.all([
+      api("/admin/api/overview"),
+      api("/admin/api/matters?limit=" + PAGE_LIMIT)
+    ]);
+    const stats = expectOk(overview, "Overview failed.");
+    const rows = expectOk(list, "List failed.");
+    return {
+      statuses: unique((stats.byStatus || []).map((row) => row.status)).sort(),
+      owners: unique((Array.isArray(rows) ? rows : []).map((row) => row.owner)).sort()
+    };
+  }
+
+  function ownerList(catalog, extra) {
+    return el("datalist", { id: "owner-options" }, unique([...catalog.owners, ...extra]).map((owner) => el("option", { value: owner })));
+  }
+
+  // ---------- Needs attention ----------
+
+  async function viewAttention() {
+    document.title = "Needs attention · 5head admin";
+    const [overviewRes, blockedRes] = await Promise.all([
+      api("/admin/api/overview"),
+      api("/admin/api/matters?status=blocked&limit=" + PAGE_LIMIT)
+    ]);
+    const overview = expectOk(overviewRes, "Overview failed.");
+    const blocked = expectOk(blockedRes, "Blocked list failed.");
+    const stale = (overview.claims || []).filter((row) => !row.active);
+
     const root = el("div");
     const notice = takeFlash();
     if (notice) root.append(banner(notice.message, notice.tone));
-    const stale = body.staleClaims || 0;
-    root.append(el("div", { class: "stats" }, [
-      el("section", { class: "card stat" }, [el("b", null, [body.total || 0]), el("span", null, ["Matters"])]),
-      el("section", { class: "card stat" }, [el("b", null, [body.activeClaims || 0]), el("span", null, ["Active claims"])]),
-      el("section", { class: stale ? "card stat warn" : "card stat" }, [el("b", null, [stale]), el("span", null, ["Stale claims"])])
-    ]));
+    root.append(el("p", { class: "lede muted" }, ["What is stuck: stale claims and blocked matters. Open one to act on it."]));
 
-    const statuses = el("section", { class: "card panel" }, [
-      el("h2", null, ["By status"]),
-      el("p", { class: "section-note muted" }, ["Counts of every shared matter."])
-    ]);
-    if (!body.byStatus || body.byStatus.length === 0) {
-      statuses.append(el("p", { class: "empty" }, ["No matters yet."]));
-    } else {
-      const table = el("table", null, [
-        el("caption", { class: "sr" }, ["Matter counts by status"]),
-        el("thead", null, [el("tr", null, [el("th", null, ["Status"]), el("th", null, ["Count"])])])
-      ]);
-      const tbody = el("tbody");
-      for (const row of body.byStatus) {
-        tbody.append(el("tr", null, [
-          el("td", null, [pill(row.status)]),
-          el("td", null, [row.count])
-        ]));
-      }
-      table.append(tbody);
-      statuses.append(table);
+    if (!stale.length && !blocked.length) {
+      root.append(panel(null, null, el("p", { class: "empty" }, ["Nothing is stuck. No stale claims and no blocked matters."])));
+      return root;
     }
-    root.append(statuses);
 
-    const claims = el("section", { class: "card panel" }, [
-      el("h2", null, ["Claims"]),
-      el("p", { class: "section-note muted" }, ["Active claims are still inside their TTL. Stale claims are stuck until someone clears them."])
-    ]);
-    if (!body.claims || body.claims.length === 0) {
-      claims.append(el("p", { class: "empty" }, ["No claims right now."]));
-    } else {
-      const table = el("table", null, [
-        el("caption", { class: "sr" }, ["Current claims"]),
-        el("thead", null, [el("tr", null, [
-          el("th", null, ["Matter"]),
-          el("th", null, ["Owner"]),
-          el("th", null, ["Claimed by"]),
-          el("th", null, ["Expires"]),
-          el("th", null, ["State"])
-        ])])
-      ]);
-      const tbody = el("tbody");
-      for (const row of body.claims) {
-        tbody.append(el("tr", null, [
-          el("td", { class: "title" }, [el("a", { href: "#/matters/" + row.id }, [row.title])]),
-          el("td", null, [row.owner]),
-          el("td", null, [row.claimedBy]),
-          el("td", null, [formatTime(row.claimExpiresAt)]),
-          el("td", null, [pill(row.active ? "active" : "stale", row.active ? "st-go" : "st-warn")])
-        ]));
-      }
-      table.append(tbody);
-      claims.append(table);
+    if (stale.length) {
+      root.append(panel(
+        "Stale claims (" + stale.length + ")",
+        "The claim's time limit ran out, so an agent may have stopped. Check before you clear it.",
+        dataTable("Stale claims",
+          [th("Matter"), th("Owner"), th("Claimed by"), th("Expired"), th("")],
+          stale.map((row) => tr([
+            td(el("a", { href: "#/matters/" + row.id }, [row.title]), "title"),
+            td(row.owner),
+            td(row.claimedBy || "—"),
+            td(timeEl(row.claimExpiresAt)),
+            td(el("a", { href: "#/matters/" + row.id }, ["Review"]))
+          ])))
+      ));
     }
-    root.append(claims);
+
+    if (blocked.length) {
+      root.append(panel(
+        "Blocked (" + blocked.length + ")",
+        "Matters marked blocked. Read the next step before changing anything.",
+        dataTable("Blocked matters",
+          [th("Matter"), th("Owner"), th("Next step"), th("Updated"), th("")],
+          blocked.map((row) => tr([
+            td(el("a", { href: "#/matters/" + row.id }, [row.title]), "title"),
+            td(row.owner),
+            td(row.nextStep || "—"),
+            td(timeEl(row.updatedAt)),
+            td(el("a", { href: "#/matters/" + row.id }, ["Review"]))
+          ])))
+      ));
+    }
     return root;
   }
 
-  function renderMatters(rows, params) {
+  // ---------- Overview ----------
+
+  function statLink(label, value, href, tone) {
+    return el("a", { class: "card stat" + (tone ? " " + tone : ""), href }, [
+      el("b", null, [value]),
+      el("span", null, [label])
+    ]);
+  }
+
+  async function viewOverview() {
+    document.title = "Overview · 5head admin";
+    const body = expectOk(await api("/admin/api/overview"), "Overview failed.");
     const root = el("div");
     const notice = takeFlash();
     if (notice) root.append(banner(notice.message, notice.tone));
+
+    const stale = body.staleClaims || 0;
+    root.append(el("div", { class: "stats" }, [
+      statLink("Matters", body.total || 0, "#/matters"),
+      statLink("Active claims", body.activeClaims || 0, "#/matters"),
+      statLink("Stale claims", stale, "#/attention", stale ? "warn" : "")
+    ]));
+
+    const statusRows = body.byStatus || [];
+    root.append(panel(
+      "By status",
+      "Select a status to see its matters.",
+      statusRows.length
+        ? dataTable("Matter counts by status",
+          [th("Status"), th("Count")],
+          statusRows.map((row) => tr([
+            td(el("a", { href: "#/matters?status=" + encodeURIComponent(row.status) }, [pill(row.status)])),
+            td(row.count)
+          ])))
+        : el("p", { class: "empty" }, ["No matters yet."])
+    ));
+
+    const claims = body.claims || [];
+    root.append(panel(
+      "Claims",
+      "Active claims are inside their time limit. Stale claims need a look.",
+      claims.length
+        ? dataTable("Current claims",
+          [th("Matter"), th("Owner"), th("Claimed by"), th("Expires"), th("State")],
+          claims.map((row) => tr([
+            td(el("a", { href: "#/matters/" + row.id }, [row.title]), "title"),
+            td(row.owner),
+            td(row.claimedBy),
+            td(timeEl(row.claimExpiresAt)),
+            td(pill(row.active ? "active" : "stale", row.active ? "st-go" : "st-warn"))
+          ])))
+        : el("p", { class: "empty" }, ["No claims right now."])
+    ));
+    return root;
+  }
+
+  // ---------- Matters list ----------
+
+  function sortValue(row, key) {
+    switch (key) {
+      case "version": return Number(row.version) || 0;
+      case "updated": return Date.parse(row.updatedAt) || 0;
+      case "claim": return row.claimedBy || "";
+      case "nextStep": return row.nextStep || "";
+      default: return String(row[key] || "");
+    }
+  }
+
+  function sortRows(rows) {
+    const mult = listSort.dir === "asc" ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const x = sortValue(a, listSort.key);
+      const y = sortValue(b, listSort.key);
+      if (typeof x === "number" && typeof y === "number") return (x - y) * mult;
+      return String(x).localeCompare(String(y)) * mult;
+    });
+  }
+
+  function matterTable(rows, redraw) {
+    const headers = LIST_COLUMNS.map(([key, label]) => {
+      const active = listSort.key === key;
+      const arrow = active ? (listSort.dir === "asc" ? " ↑" : " ↓") : "";
+      const button = el("button", { type: "button", class: "sort" }, [label + arrow]);
+      button.addEventListener("click", () => {
+        if (active) {
+          listSort = { key, dir: listSort.dir === "asc" ? "desc" : "asc" };
+        } else {
+          listSort = { key, dir: key === "updated" || key === "version" ? "desc" : "asc" };
+        }
+        redraw();
+      });
+      const ariaSort = active ? (listSort.dir === "asc" ? "ascending" : "descending") : "none";
+      return el("th", { scope: "col", "aria-sort": ariaSort }, [button]);
+    });
+    return dataTable("Matters", headers, sortRows(rows).map((row) => tr([
+      td(el("a", { href: "#/matters/" + row.id }, [row.title]), "title"),
+      td(pill(row.status)),
+      td(row.owner),
+      td(row.nextStep || "—"),
+      td(row.claimedBy
+        ? el("span", null, [row.claimedBy, " ", pill(row.claimActive ? "active" : "stale", row.claimActive ? "st-go" : "st-warn")])
+        : "—"),
+      td(row.version),
+      td(timeEl(row.updatedAt))
+    ])));
+  }
+
+  function filterForm(filters, catalog) {
+    const statuses = unique([...catalog.statuses, filters.status]).sort();
+    const status = el("select", { name: "status" }, [
+      el("option", { value: "" }, ["Any status"]),
+      ...statuses.map((value) => el("option", { value }, [value]))
+    ]);
+    status.value = filters.status;
+    const owner = el("input", { type: "text", name: "owner", value: filters.owner, list: "owner-options", spellcheck: "false" });
+    const clearButton = el("button", { class: "ghost", type: "button" }, ["Clear"]);
     const form = el("form", { class: "filters" }, [
-      el("label", null, ["Status", el("input", { name: "status", type: "text", value: params.get("status") || "", spellcheck: "false" })]),
-      el("label", null, ["Owner", el("input", { name: "owner", type: "text", value: params.get("owner") || "", spellcheck: "false" })]),
+      el("label", null, ["Status", status]),
+      el("label", null, ["Owner", owner]),
       el("button", { class: "primary", type: "submit" }, ["Apply"]),
-      el("button", { class: "ghost", type: "button", id: "clear-filters" }, ["Clear"])
+      clearButton
     ]);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      const data = new FormData(form);
       const next = new URLSearchParams();
-      const status = String(data.get("status") || "").trim();
-      const owner = String(data.get("owner") || "").trim();
-      if (status) next.set("status", status);
-      if (owner) next.set("owner", owner);
+      if (status.value) next.set("status", status.value);
+      if (owner.value.trim()) next.set("owner", owner.value.trim());
       const query = next.toString();
-      const hash = query ? "#/matters?" + query : "#/matters";
-      if (location.hash === hash) render();
-      else location.hash = hash;
+      navigate(query ? "#/matters?" + query : "#/matters");
     });
-    form.querySelector("#clear-filters").addEventListener("click", () => {
-      if (location.hash === "#/matters" || location.hash === "#/matters?") render();
-      else location.hash = "#/matters";
-    });
-    root.append(form);
-
-    const panel = el("section", { class: "card panel" });
-    if (!rows.length) {
-      panel.append(el("p", { class: "empty" }, ["No matters match these filters."]));
-    } else {
-      const table = el("table", null, [
-        el("caption", { class: "sr" }, ["Matters"]),
-        el("thead", null, [el("tr", null, [
-          el("th", null, ["Title"]),
-          el("th", null, ["Status"]),
-          el("th", null, ["Owner"]),
-          el("th", null, ["Next step"]),
-          el("th", null, ["Claim"]),
-          el("th", null, ["Version"])
-        ])])
-      ]);
-      const tbody = el("tbody");
-      for (const row of rows) {
-        const claim = row.claimedBy ? row.claimedBy : "—";
-        tbody.append(el("tr", null, [
-          el("td", { class: "title" }, [el("a", { href: "#/matters/" + row.id }, [row.title])]),
-          el("td", null, [pill(row.status)]),
-          el("td", null, [row.owner]),
-          el("td", null, [row.nextStep || "—"]),
-          el("td", null, [claim]),
-          el("td", null, [row.version])
-        ]));
-      }
-      table.append(tbody);
-      panel.append(table);
-    }
-    root.append(panel);
-    return root;
+    clearButton.addEventListener("click", () => navigate("#/matters"));
+    return form;
   }
 
-  function showInline(anchor, message, tone, matter) {
-    const existing = anchor.parentElement && anchor.parentElement.querySelector(".banner");
-    if (existing) existing.remove();
-    const extra = el("div");
-    if (matter) {
-      extra.append(el("p", null, [
-        "Current row: status " + (matter.status || "—")
-          + ", owner " + (matter.owner || "—")
-          + ", next step " + (matter.nextStep || "(none)")
-          + ", version " + matter.version + "."
-      ]));
-      const reload = el("button", { type: "button", class: "ghost" }, ["Discard edits and reload"]);
-      reload.addEventListener("click", () => render());
-      extra.append(reload);
-    }
-    const node = banner(message, tone, extra);
-    node.setAttribute("role", "alert");
-    anchor.before(node);
-  }
+  async function viewMatters(route) {
+    document.title = "Matters · 5head admin";
+    const filters = {
+      status: route.params.get("status") || "",
+      owner: route.params.get("owner") || ""
+    };
+    const query = new URLSearchParams({ limit: String(PAGE_LIMIT) });
+    if (filters.status) query.set("status", filters.status);
+    if (filters.owner) query.set("owner", filters.owner);
+    const [catalog, listRes] = await Promise.all([loadCatalog(), api("/admin/api/matters?" + query)]);
+    const rows = expectOk(listRes, "List failed.");
+    const list = Array.isArray(rows) ? rows : [];
 
-  function renderMatter(matter) {
     const root = el("div");
     const notice = takeFlash();
     if (notice) root.append(banner(notice.message, notice.tone));
+    root.append(filterForm(filters, catalog));
+    root.append(ownerList(catalog, []));
 
-    root.append(el("div", { class: "matter-head" }, [
-      el("p", { class: "meta" }, [el("a", { href: "#/matters" }, ["Matters"])]),
-      el("h1", null, [matter.title]),
-      el("p", { class: "meta" }, [
-        matter.id + " · version " + matter.version + " · updated " + formatTime(matter.updatedAt)
-          + (matter.vectorRef ? " · " + matter.vectorRef : "")
-      ])
-    ]));
+    const filtered = Boolean(filters.status || filters.owner);
+    const host = el("div");
+    const redraw = () => {
+      clear(host);
+      if (!list.length) {
+        host.append(el("p", { class: "empty" }, [
+          filtered ? "No matters match these filters. " : "No matters yet.",
+          filtered ? el("a", { href: "#/matters" }, ["Clear filters"]) : ""
+        ]));
+        return;
+      }
+      const note = list.length + (list.length === 1 ? " matter" : " matters")
+        + (list.length >= PAGE_LIMIT ? ". Only the first " + PAGE_LIMIT + " match. Narrow the filters to see the rest." : "");
+      host.append(el("p", { class: "section-note muted count" }, [note]));
+      host.append(matterTable(list, redraw));
+    };
+    redraw();
+    root.append(el("section", { class: "card panel" }, [host]));
+    return root;
+  }
 
-    const side = el("div");
-    const claimCard = el("section", { class: "card stack" }, [el("h2", null, ["Claim"])]);
+  // ---------- One matter ----------
+
+  function buildClaimCard(matter) {
+    const card = el("section", { class: "card stack" }, [el("h2", null, ["Claim"])]);
     if (!matter.claimedBy) {
-      claimCard.append(el("p", { class: "muted" }, ["Nobody holds this matter."]));
-    } else {
-      const active = matter.claimExpiresAt && Date.parse(matter.claimExpiresAt) > Date.now();
-      claimCard.append(el("p", null, [pill(active ? "active" : "stale", active ? "st-go" : "st-warn"), " ", matter.claimedBy]));
-      claimCard.append(el("p", { class: "muted" }, ["Expires " + formatTime(matter.claimExpiresAt)]));
-      const release = el("button", { type: "button", class: "danger" }, [active ? "Force-release claim" : "Clear stale claim"]);
-      release.addEventListener("click", async () => {
-        if (release.dataset.armed !== "1") {
-          release.dataset.armed = "1";
-          release.textContent = "Confirm clear claim";
-          return;
-        }
-        release.disabled = true;
-        const response = await ensureOk(await request("/admin/api/matters/" + matter.id + "/force-release", { method: "POST" }));
-        if (!response) return;
-        const payload = await readJson(response);
-        if (!response.ok) {
-          release.disabled = false;
-          release.dataset.armed = "";
-          showInline(claimCard, payload.message || "Could not clear the claim.", "bad", payload.matter);
+      card.append(el("p", { class: "muted" }, ["Nobody holds this matter."]));
+      return card;
+    }
+    const active = matter.claimActive === true;
+    card.append(el("p", null, [pill(active ? "active" : "stale", active ? "st-go" : "st-warn"), " ", matter.claimedBy]));
+    card.append(el("p", { class: "muted" }, [active ? "Expires " : "Expired ", timeEl(matter.claimExpiresAt)]));
+
+    const trigger = el("button", { type: "button", class: "danger", "aria-expanded": "false" }, [
+      active ? "Force-release claim…" : "Clear stale claim…"
+    ]);
+    const cancel = el("button", { type: "button", class: "ghost" }, ["Cancel"]);
+    const confirmButton = el("button", { type: "button", class: "danger" }, [active ? "Yes, release it" : "Yes, clear it"]);
+    const confirm = el("div", { class: "confirm", hidden: "" }, [
+      el("p", null, [active
+        ? "Another agent still holds this claim. Releasing it can let two agents work on the same matter. The timeline records admin.force_release."
+        : "This claim has expired. Clearing it records admin.force_release in the timeline."]),
+      el("div", { class: "row-actions" }, [confirmButton, cancel])
+    ]);
+
+    trigger.addEventListener("click", () => {
+      confirm.hidden = false;
+      trigger.setAttribute("aria-expanded", "true");
+      cancel.focus();
+    });
+    cancel.addEventListener("click", () => {
+      confirm.hidden = true;
+      trigger.setAttribute("aria-expanded", "false");
+      trigger.focus();
+    });
+    confirmButton.addEventListener("click", async () => {
+      confirmButton.disabled = true;
+      try {
+        const result = await api("/admin/api/matters/" + encodeURIComponent(matter.id) + "/force-release", { method: "POST" });
+        if (!result.ok) {
+          confirmButton.disabled = false;
+          inlineError(card, (result.body && result.body.message) || "Could not clear the claim.");
           return;
         }
         flash = { message: "Cleared the claim. The timeline records it as admin.", tone: "ok" };
         await render();
-      });
-      claimCard.append(release);
-      claimCard.append(el("p", { class: "muted" }, ["This clears the claim even if another agent still holds it, and writes an admin.force_release event."]));
-    }
-    side.append(claimCard);
+      } catch (error) {
+        if (error instanceof SessionExpired) {
+          expireSession();
+          return;
+        }
+        confirmButton.disabled = false;
+        inlineError(card, error.message || "Could not clear the claim.");
+      }
+    });
 
-    const form = el("form", { class: "card stack" });
-    form.append(el("h2", null, ["Edit"]));
-    form.append(el("p", { class: "muted" }, ["Status and owner changes skip the owner rule here. The version is still checked. A conflict does not write."]));
-    form.append(el("label", null, ["Status", el("input", { name: "status", type: "text", value: matter.status || "", required: "required", spellcheck: "false" })]));
-    form.append(el("label", null, ["Owner", el("input", { name: "owner", type: "text", value: matter.owner || "", required: "required", spellcheck: "false" })]));
-    form.append(el("label", null, ["Next step", el("input", { name: "nextStep", type: "text", value: matter.nextStep || "", spellcheck: "false" })]));
-    form.append(el("input", { type: "hidden", name: "version", value: matter.version }));
-    const actions = el("div", { class: "row-actions" }, [
-      el("button", { class: "primary", type: "submit" }, ["Save"]),
-      el("span", { class: "muted" }, ["Version " + matter.version + " · recorded as admin"])
-    ]);
-    form.append(actions);
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const submit = form.querySelector("button[type=submit]");
-      submit.disabled = true;
-      const data = new FormData(form);
-      const response = await ensureOk(await request("/admin/api/matters/" + matter.id, {
+    card.append(trigger, confirm);
+    return card;
+  }
+
+  function readEdit(form) {
+    const select = form.elements.status;
+    const other = form.elements.statusOther;
+    return {
+      status: (select.value === OTHER ? other.value : select.value).trim(),
+      owner: form.elements.owner.value.trim(),
+      nextStep: form.elements.nextStep.value.trim()
+    };
+  }
+
+  async function saveEdit(form, matterId, version, values) {
+    const submit = form.querySelector("button[type=submit]");
+    if (submit) submit.disabled = true;
+    // Keep the edit before the request, so a session expiry mid-save does not lose it.
+    draft = { id: matterId, version, values };
+    try {
+      const result = await api("/admin/api/matters/" + encodeURIComponent(matterId), {
         method: "PATCH",
         body: JSON.stringify({
-          version: Number(data.get("version")),
-          status: String(data.get("status") || ""),
-          owner: String(data.get("owner") || ""),
-          nextStep: String(data.get("nextStep") || "")
+          version,
+          status: values.status,
+          owner: values.owner,
+          nextStep: values.nextStep
         })
-      }));
-      if (!response) return;
-      const payload = await readJson(response);
-      submit.disabled = false;
-      if (response.status === 409) {
-        showInline(form, payload.message || "Version conflict.", "bad", payload.matter);
+      });
+      if (result.status === 409 && result.body && result.body.matter) {
+        showConflict(form, matterId, result.body.matter, values);
         return;
       }
-      if (!response.ok) {
-        showInline(form, payload.message || "Save failed.", "bad");
+      if (!result.ok) {
+        inlineError(form, (result.body && result.body.message) || "Save failed.");
         return;
       }
-      flash = { message: "Saved as admin. Version is now " + (payload.version != null ? payload.version : "updated") + ".", tone: "ok" };
+      draft = null;
+      flash = { message: "Saved as admin. Version is now " + result.body.version + ".", tone: "ok" };
       await render();
-    });
-    side.append(form);
+    } catch (error) {
+      if (error instanceof SessionExpired) {
+        expireSession();
+        return;
+      }
+      inlineError(form, error.message || "Save failed.");
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+  }
 
-    const timeline = el("section", { class: "card panel" }, [
-      el("h2", null, ["Timeline"]),
-      el("p", { class: "section-note muted" }, ["Append-only. Admin edits and force-releases show up here as agent admin."])
+  // A 409 shows each differing field side by side. The operator picks which values to keep, then saves on the new version.
+  function showConflict(form, matterId, current, mine) {
+    form.querySelectorAll(".conflict").forEach((node) => node.remove());
+    const cur = {
+      status: current.status || "",
+      owner: current.owner || "",
+      nextStep: current.nextStep || ""
+    };
+    const differing = FIELDS.filter(([key]) => (mine[key] || "") !== cur[key]);
+
+    const panelNode = el("section", { class: "conflict", role: "alert" }, [
+      el("h3", null, ["Someone saved this matter first"]),
+      el("p", null, ["It is now version " + current.version + ". Choose which of your values to keep."])
     ]);
-    const events = matter.events || [];
+
+    if (differing.length) {
+      panelNode.append(dataTable("Conflicting fields",
+        [th("Field"), th("Your edit"), th("Current"), th("Keep mine")],
+        differing.map(([key, label]) => tr([
+          td(label),
+          td(mine[key] || "(empty)"),
+          td(cur[key] || "(empty)"),
+          el("td", null, [el("input", { type: "checkbox", name: "keep-" + key, checked: "checked", "aria-label": "Keep my " + label.toLowerCase() })])
+        ]))));
+    } else {
+      panelNode.append(el("p", { class: "muted" }, ["Only the version changed. Your values still apply."]));
+    }
+
+    const apply = el("button", { type: "button", class: "primary" }, ["Save on version " + current.version]);
+    const discard = el("button", { type: "button", class: "ghost" }, ["Discard my edits"]);
+    apply.addEventListener("click", () => {
+      const merged = { ...cur };
+      for (const [key] of differing) {
+        const keep = panelNode.querySelector('input[name="keep-' + key + '"]');
+        merged[key] = keep && keep.checked ? mine[key] : cur[key];
+      }
+      saveEdit(form, matterId, current.version, merged);
+    });
+    discard.addEventListener("click", () => {
+      draft = null;
+      flash = { message: "Discarded your edits. Showing version " + current.version + ".", tone: "ok" };
+      render();
+    });
+    panelNode.append(el("div", { class: "row-actions" }, [apply, discard]));
+    form.querySelector(".row-actions").before(panelNode);
+  }
+
+  async function viewMatter(route) {
+    const [matterRes, catalog] = await Promise.all([
+      api("/admin/api/matters/" + encodeURIComponent(route.id)),
+      loadCatalog()
+    ]);
+    const root = el("div");
+    if (matterRes.status === 404) {
+      document.title = "Not found · 5head admin";
+      root.append(el("p", null, ["That matter does not exist. ", el("a", { href: lastMattersHash }, ["Back to matters"])]));
+      return root;
+    }
+    const matter = expectOk(matterRes, "Matter failed.");
+    document.title = matter.title + " · 5head admin";
+
+    const notice = takeFlash();
+    if (notice) root.append(banner(notice.message, notice.tone));
+
+    const restoring = draft && draft.id === matter.id ? draft : null;
+    // When restoring, save against the version the edit was made on, so a newer save shows up as a conflict.
+    const baseVersion = restoring ? restoring.version : matter.version;
+    const initial = restoring
+      ? restoring.values
+      : { status: matter.status || "", owner: matter.owner || "", nextStep: matter.nextStep || "" };
+    if (restoring) {
+      const discardDraft = el("button", { type: "button", class: "ghost" }, ["Discard edits"]);
+      discardDraft.addEventListener("click", () => {
+        draft = null;
+        render();
+      });
+      const text = restoring.version === matter.version
+        ? "Restored your unsaved edits."
+        : "Restored your unsaved edits. This matter changed while you were away, so saving will show the differences first.";
+      root.append(banner(text, "ok", discardDraft));
+    }
+
+    root.append(el("div", { class: "matter-head" }, [
+      el("p", { class: "meta" }, [el("a", { href: lastMattersHash }, ["← Matters"])]),
+      el("h1", null, [matter.title]),
+      el("p", { class: "meta" }, [
+        matter.id + " · version " + matter.version + " · updated ",
+        timeEl(matter.updatedAt),
+        matter.vectorRef ? " · " + matter.vectorRef : ""
+      ])
+    ]));
+
+    // Edit form
+    const statusOptions = unique([...catalog.statuses, matter.status, initial.status]).sort();
+    const knownStatus = statusOptions.includes(initial.status);
+    const statusSelect = el("select", { name: "status" }, [
+      ...statusOptions.map((value) => el("option", { value }, [value])),
+      el("option", { value: OTHER }, ["New status…"])
+    ]);
+    statusSelect.value = knownStatus ? initial.status : OTHER;
+    const statusOther = el("input", {
+      type: "text",
+      name: "statusOther",
+      "aria-label": "New status name",
+      spellcheck: "false",
+      value: knownStatus ? "" : initial.status
+    });
+    statusOther.hidden = knownStatus;
+
+    const form = el("form", { class: "card stack", novalidate: "novalidate" }, [
+      el("h2", null, ["Edit"]),
+      el("p", { class: "muted" }, ["Saved as admin. If someone else saved first, you choose what to keep."]),
+      el("label", null, ["Status", statusSelect, statusOther]),
+      el("label", null, ["Owner", el("input", { type: "text", name: "owner", value: initial.owner, list: "owner-options", spellcheck: "false", required: "required" })]),
+      el("label", null, ["Next step", el("input", { type: "text", name: "nextStep", value: initial.nextStep, spellcheck: "false" })]),
+      ownerList(catalog, [matter.owner, initial.owner]),
+      el("div", { class: "row-actions" }, [
+        el("button", { class: "primary", type: "submit" }, ["Save"]),
+        el("span", { class: "muted" }, ["Version " + baseVersion + " · recorded as admin"])
+      ])
+    ]);
+
+    statusSelect.addEventListener("change", () => {
+      statusOther.hidden = statusSelect.value !== OTHER;
+      if (!statusOther.hidden) statusOther.focus();
+    });
+    const remember = () => {
+      draft = { id: matter.id, version: baseVersion, values: readEdit(form) };
+    };
+    form.addEventListener("input", remember);
+    form.addEventListener("change", remember);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const values = readEdit(form);
+      if (!values.status) {
+        inlineError(form, "Pick or enter a status.");
+        return;
+      }
+      if (!values.owner) {
+        inlineError(form, "Owner is required.");
+        return;
+      }
+      saveEdit(form, matter.id, baseVersion, values);
+    });
+
+    const timeline = panel("Timeline", "Newest first. Admin edits and force-releases are recorded as agent admin.");
+    const events = [...(matter.events || [])].reverse();
     if (!events.length) {
       timeline.append(el("p", { class: "empty" }, ["No events yet."]));
     } else {
       const list = el("ol", { class: "timeline" });
       for (const item of events) {
         const kindClass = String(item.kind || "").startsWith("admin.") ? "st-admin" : "";
+        const hasPayload = item.payload && typeof item.payload === "object" && Object.keys(item.payload).length > 0;
         const body = el("div", null, [
           el("div", { class: "event-top" }, [
             pill(item.kind, kindClass),
             el("span", null, [item.agent]),
-            el("time", { datetime: item.createdAt || "" }, [formatTime(item.createdAt)])
+            timeEl(item.createdAt)
           ]),
-          el("p", { class: "summary" }, [item.summary])
+          el("p", { class: "summary" }, [item.summary]),
+          hasPayload
+            ? el("details", { class: "fold" }, [
+              el("summary", null, ["Details"]),
+              el("pre", { class: "payload" }, [JSON.stringify(item.payload, null, 2)])
+            ])
+            : ""
         ]);
-        const payload = item.payload && typeof item.payload === "object" && Object.keys(item.payload).length
-          ? JSON.stringify(item.payload, null, 2)
-          : "";
-        if (payload) body.append(el("pre", { class: "payload" }, [payload]));
         list.append(el("li", null, [el("span", { class: "dot", "aria-hidden": "true" }), body]));
       }
       timeline.append(list);
     }
 
-    const meta = el("section", { class: "card panel" }, [
-      el("h2", null, ["Metadata"]),
+    const metadata = panel("Metadata", null, el("details", { class: "fold" }, [
+      el("summary", null, ["Show metadata JSON"]),
       el("pre", { class: "meta" }, [JSON.stringify(matter.metadata || {}, null, 2)])
-    ]);
+    ]));
 
-    const mainCol = el("div", null, [timeline, meta]);
-    root.append(el("div", { class: "layout" }, [side, mainCol]));
+    const side = el("div", { class: "side" }, [buildClaimCard(matter), form]);
+    root.append(el("div", { class: "layout" }, [side, el("div", null, [timeline, metadata])]));
     return root;
   }
+
+  // ---------- Router ----------
+
+  const VIEWS = {
+    attention: viewAttention,
+    overview: viewOverview,
+    matters: viewMatters,
+    matter: viewMatter
+  };
 
   async function render() {
     if (!signedIn) return;
     const route = parseRoute();
+    if (route.name === "matters") lastMattersHash = location.hash || "#/matters";
     markNav(route.name === "matter" ? "matters" : route.name);
     main.setAttribute("aria-busy", "true");
     clear(main);
-    main.append(el("p", { class: "muted" }, ["Loading shared state…"]));
+    main.append(el("p", { class: "muted", role: "status" }, ["Loading shared state…"]));
 
     try {
-      if (route.name === "overview") {
-        document.title = "Overview · 5head admin";
-        const response = await ensureOk(await request("/admin/api/overview"));
-        if (!response) return;
-        const body = await readJson(response);
-        if (!response.ok) throw new Error(body.message || "Overview failed.");
-        clear(main);
-        main.append(renderOverview(body));
-      } else if (route.name === "matters") {
-        document.title = "Matters · 5head admin";
-        const query = new URLSearchParams();
-        if (route.params.get("status")) query.set("status", route.params.get("status"));
-        if (route.params.get("owner")) query.set("owner", route.params.get("owner"));
-        const response = await ensureOk(await request("/admin/api/matters" + (query.toString() ? "?" + query.toString() : "")));
-        if (!response) return;
-        const rows = await readJson(response);
-        if (!response.ok) throw new Error((rows && rows.message) || "List failed.");
-        clear(main);
-        main.append(renderMatters(Array.isArray(rows) ? rows : [], route.params));
-      } else {
-        document.title = "Matter · 5head admin";
-        const response = await ensureOk(await request("/admin/api/matters/" + encodeURIComponent(route.id)));
-        if (!response) return;
-        const body = await readJson(response);
-        clear(main);
-        if (response.status === 404) {
-          main.append(el("p", null, ["That matter does not exist. ", el("a", { href: "#/matters" }, ["Back to matters"])]));
-          return;
-        }
-        if (!response.ok) throw new Error(body.message || "Matter failed.");
-        main.append(renderMatter(body));
+      const view = await VIEWS[route.name](route);
+      clear(main);
+      main.append(view);
+      if (focusMain) {
+        focusMain = false;
+        const heading = main.querySelector("h1");
+        if (heading) heading.setAttribute("tabindex", "-1");
+        (heading || main).focus();
       }
     } catch (error) {
+      if (error instanceof SessionExpired) {
+        expireSession();
+        return;
+      }
       clear(main);
-      main.append(banner(error && error.message ? error.message : "Something went wrong.", "bad"));
+      let message = (error && error.message) || "Something went wrong.";
+      if (error instanceof TypeError) message = "The console could not reach the API.";
+      main.append(banner(message, "bad"));
     } finally {
       main.removeAttribute("aria-busy");
     }
   }
 
-  document.querySelector("#login-form").addEventListener("submit", async (event) => {
+  // ---------- Session ----------
+
+  loginForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const form = event.currentTarget;
-    const token = String(new FormData(form).get("token") || "");
-    form.reset();
-    loginError.classList.add("hidden");
+    const token = tokenInput.value;
+    if (!token.trim()) {
+      showLogin("Enter the admin token.");
+      tokenInput.focus();
+      return;
+    }
     let response;
     try {
       response = await request("/admin/session", {
@@ -470,23 +828,36 @@
       return;
     }
     if (!response.ok) {
-      showLogin("That token was rejected.");
+      showLogin("That token was rejected. Check it and try again.");
+      tokenInput.select();
+      tokenInput.focus();
       return;
     }
+    tokenInput.value = "";
     signedIn = true;
     showApp();
-    if (!location.hash || location.hash === "#") location.hash = "#/overview";
+    focusMain = true;
+    if (!location.hash || location.hash === "#") location.hash = DEFAULT_ROUTE;
     await render();
   });
 
   document.querySelector("#logout").addEventListener("click", async () => {
-    await request("/admin/session", { method: "DELETE" });
+    draft = null;
     flash = null;
+    lastMattersHash = "#/matters";
+    try {
+      await request("/admin/session", { method: "DELETE" });
+    } catch {
+      // Clear the page even if the request fails.
+    }
     showLogin();
     document.title = "5head admin";
   });
 
-  window.addEventListener("hashchange", () => { render(); });
+  window.addEventListener("hashchange", () => {
+    focusMain = true;
+    render();
+  });
 
   request("/admin/api/overview")
     .then(async (response) => {
@@ -500,7 +871,7 @@
       }
       signedIn = true;
       showApp();
-      if (!location.hash) location.hash = "#/overview";
+      if (!location.hash) location.hash = DEFAULT_ROUTE;
       await render();
     })
     .catch(() => showLogin("The console could not reach the API."));

@@ -28,6 +28,7 @@ public sealed record Matter(
         version = Version,
         claimedBy = ClaimedBy,
         claimExpiresAt = ClaimExpiresAt,
+        claimActive = ClaimExpiresAt is not null && ClaimExpiresAt > DateTimeOffset.UtcNow,
         createdAt = CreatedAt,
         updatedAt = UpdatedAt,
         events = events?.Select(e => e.ToResponse()).ToArray()

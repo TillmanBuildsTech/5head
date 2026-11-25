@@ -9,7 +9,7 @@
 </head>
 <body>
   <div id="login" class="login-wrap">
-    <form id="login-form" class="card login-card">
+    <form id="login-form" class="card login-card" novalidate>
       <div class="brand">
         <span class="mark" aria-hidden="true">5h</span>
         <div>
@@ -18,10 +18,8 @@
         </div>
       </div>
       <h1>Admin console</h1>
-      <p class="lede">Sign in with the admin token. If <span class="mono">FIVEHEAD_ADMIN_TOKEN</span> is unset, that is the same bearer token the agents use. The browser keeps an HttpOnly cookie; this page does not store the token.</p>
-      <p class="lede muted">Matters, events, and claims only. Per-agent memory files are not in this API.</p>
-      <label class="sr" for="account">Account</label>
-      <input id="account" name="username" type="text" autocomplete="username" value="admin" hidden tabindex="-1">
+      <p class="lede">Enter the admin token to manage shared matters and claims.</p>
+      <p class="lede muted">Per-agent memory files are not shown here.</p>
       <label for="token">Admin token</label>
       <input id="token" name="token" type="password" autocomplete="current-password" spellcheck="false" required>
       <p id="login-error" class="banner bad hidden" role="alert"></p>
@@ -41,13 +39,14 @@
           </div>
         </div>
         <nav aria-label="Sections">
+          <a href="#/attention" data-nav="attention">Needs attention</a>
           <a href="#/overview" data-nav="overview">Overview</a>
           <a href="#/matters" data-nav="matters">Matters</a>
         </nav>
         <button id="logout" class="ghost" type="button">Sign out</button>
       </header>
-      <main id="main"></main>
-      <p class="footnote">Shared state only. Memory browsing is out of scope: SOUL.md, MEMORY.md, USER.md, and provenance stay on each agent.</p>
+      <main id="main" tabindex="-1"></main>
+      <p class="footnote">Shared state only. Memory files (SOUL.md, MEMORY.md, USER.md, provenance) stay on each agent.</p>
     </div>
   </div>
   <script src="/admin/app.js"></script>
