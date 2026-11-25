@@ -52,7 +52,7 @@ Best fit for local development and for the flow already covered by tests.
 {
   "command": "dotnet",
   "args": [
-    "/absolute/path/to/src/FiveHead.Mcp.Host/bin/Debug/net9.0/5head-mcp.dll"
+    "/absolute/path/to/src/FiveHead.Mcp.Host/bin/Debug/net10.0/5head-mcp.dll"
   ]
 }
 ```
@@ -75,7 +75,7 @@ Local checkout setup with the repo-proven dev flow:
 
 ```bash
 claude mcp add --transport stdio --scope project memory -- \
-  dotnet /absolute/path/to/src/FiveHead.Mcp.Host/bin/Debug/net9.0/5head-mcp.dll
+  dotnet /absolute/path/to/src/FiveHead.Mcp.Host/bin/Debug/net10.0/5head-mcp.dll
 ```
 
 Equivalent `.mcp.json` shape:
@@ -122,7 +122,7 @@ Dev checkout variant:
     "memory": {
       "command": "dotnet",
       "args": [
-        "/absolute/path/to/src/FiveHead.Mcp.Host/bin/Debug/net9.0/5head-mcp.dll"
+        "/absolute/path/to/src/FiveHead.Mcp.Host/bin/Debug/net10.0/5head-mcp.dll"
       ]
     }
   }
@@ -165,7 +165,7 @@ Dev checkout variant:
     "memory": {
       "command": "dotnet",
       "args": [
-        "/absolute/path/to/src/FiveHead.Mcp.Host/bin/Debug/net9.0/5head-mcp.dll"
+        "/absolute/path/to/src/FiveHead.Mcp.Host/bin/Debug/net10.0/5head-mcp.dll"
       ]
     }
   }

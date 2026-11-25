@@ -76,7 +76,7 @@ dotnet build
 dotnet run --project src/FiveHead.Mcp.Host
 ```
 
-Requires the .NET 9 SDK.
+Requires the .NET 10 SDK.
 
 > Homebrew, Chocolatey, and `dotnet tool` packaging are planned but not shipped yet.
 
@@ -247,7 +247,7 @@ For V1, compaction is intentionally narrow: use an explicit `replace` write when
 MCP Client (Claude Code / Copilot / Cursor)
     │ MCP JSON-RPC / stdio
     ▼
-5head-mcp (.NET 9, Native AOT)
+5head-mcp (.NET 10, Native AOT)
     ├── Memory tools and resources
     ├── Contradiction Checker
     ├── Size Limit Guard
@@ -312,7 +312,7 @@ dotnet build
 dotnet test
 ```
 
-Requirements: .NET 9 SDK.
+Requirements: .NET 10 SDK.
 
 ---
 

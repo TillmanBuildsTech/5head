@@ -1,11 +1,11 @@
-FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY src/FiveHead.State.Api/FiveHead.State.Api.csproj src/FiveHead.State.Api/
 RUN dotnet restore src/FiveHead.State.Api/FiveHead.State.Api.csproj
 COPY src/FiveHead.State.Api/ src/FiveHead.State.Api/
 RUN dotnet publish src/FiveHead.State.Api/FiveHead.State.Api.csproj -c Release -o /app --no-restore
 
-FROM mcr.microsoft.com/dotnet/aspnet:9.0
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*

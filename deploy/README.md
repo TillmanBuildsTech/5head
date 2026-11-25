@@ -9,7 +9,7 @@ There is no vector database here. `vectorRef` is a pointer to one you already ru
 
 ## Why .NET
 
-The rest of this repo is .NET 9, and CI is already `dotnet test`. ASP.NET Core
+The rest of this repo is .NET 10, and CI is already `dotnet test`. ASP.NET Core
 gives bearer auth, OpenAPI, and a test host. Npgsql can run
 `FOR UPDATE SKIP LOCKED`. The API is a long-running home-lab service, so it
 is not published as Native AOT. The stdio host that calls it is.
