@@ -87,9 +87,10 @@ git. `.env` is gitignored.
 
 ### 5head
 
-There is one MCP server. Memory tools are always registered. State tools are
-registered only when `FIVEHEAD_STATE_URL` and `FIVEHEAD_STATE_TOKEN` are both
-set (or the matching `config.yaml` keys). See the README section "One server".
+5head is a local memory MCP by default. Shared State is an optional add-on:
+those tools are registered only when `FIVEHEAD_STATE_URL` and
+`FIVEHEAD_STATE_TOKEN` are both set (or the matching `config.yaml` keys).
+See the README section "Local memory by default, shared state when you opt in".
 
 ## HTTP API
 

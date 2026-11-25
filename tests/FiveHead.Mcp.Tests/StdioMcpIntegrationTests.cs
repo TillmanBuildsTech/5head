@@ -62,9 +62,18 @@ public sealed class StdioMcpIntegrationTests : IDisposable
 
         Assert.Contains(tools, tool => tool.Name == "read_memory");
         Assert.Contains(tools, tool => tool.Name == "write_memory");
+        Assert.Contains(tools, tool => tool.Name == "check_contradictions");
+        Assert.Contains(tools, tool => tool.Name == "list_facts");
+        Assert.Contains(tools, tool => tool.Name == "confirm_fact");
+        Assert.Contains(tools, tool => tool.Name == "retract_fact");
         Assert.Contains(tools, tool => tool.Name == "get_provenance");
         Assert.DoesNotContain(tools, tool => tool.Name == "list_matters");
+        Assert.DoesNotContain(tools, tool => tool.Name == "get_matter");
+        Assert.DoesNotContain(tools, tool => tool.Name == "create_matter");
         Assert.DoesNotContain(tools, tool => tool.Name == "update_matter");
+        Assert.DoesNotContain(tools, tool => tool.Name == "append_event");
+        Assert.DoesNotContain(tools, tool => tool.Name == "claim_next");
+        Assert.DoesNotContain(tools, tool => tool.Name == "release_claim");
         Assert.Contains(resources, resource => resource.Name == "memory" && resource.Title == "MEMORY.md");
         Assert.Contains(resources, resource => resource.Name == "soul" && resource.Title == "SOUL.md");
 

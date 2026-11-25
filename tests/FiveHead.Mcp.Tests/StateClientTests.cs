@@ -113,21 +113,69 @@ public sealed class StateClientTests
     }
 
     [Fact]
-    public void Add_RegistersStateToolsOnTheMcpBuilder()
+    public void StateToolGroup_IsAbsentWhenUnconfigured_AndPresentWhenConfigured()
     {
-        var without = ToolNames(includeState: false);
-        var withState = ToolNames(includeState: true);
+        string[] memoryTools =
+        [
+            "read_memory",
+            "write_memory",
+            "check_contradictions",
+            "list_facts",
+            "confirm_fact",
+            "retract_fact",
+            "get_provenance"
+        ];
+        string[] stateTools =
+        [
+            "list_matters",
+            "get_matter",
+            "create_matter",
+            "update_matter",
+            "append_event",
+            "claim_next",
+            "release_claim"
+        ];
 
-        Assert.Contains("read_memory", without);
-        Assert.DoesNotContain("list_matters", without);
-        Assert.Contains("list_matters", withState);
-        Assert.Contains("get_matter", withState);
-        Assert.Contains("create_matter", withState);
-        Assert.Contains("update_matter", withState);
-        Assert.Contains("append_event", withState);
-        Assert.Contains("claim_next", withState);
-        Assert.Contains("release_claim", withState);
-        Assert.Contains("read_memory", withState);
+        using var unconfigured = Register(StateClientSettings.Resolve(null, null, null, _ => null));
+        Assert.Null(unconfigured.Settings);
+        foreach (var name in memoryTools)
+        {
+            Assert.Contains(name, unconfigured.ToolNames);
+        }
+
+        foreach (var name in stateTools)
+        {
+            Assert.DoesNotContain(name, unconfigured.ToolNames);
+        }
+
+        Assert.Empty(unconfigured.Provider.GetServices<HttpClient>());
+        Assert.Empty(unconfigured.Provider.GetServices<StateApiClient>());
+
+        var configuredSettings = StateClientSettings.Resolve(
+            null,
+            null,
+            null,
+            name => name switch
+            {
+                StateClientSettings.UrlVariable => "http://127.0.0.1:9",
+                StateClientSettings.TokenVariable => "test-token",
+                _ => null
+            });
+        using var configured = Register(configuredSettings);
+        Assert.NotNull(configured.Settings);
+        foreach (var name in memoryTools)
+        {
+            Assert.Contains(name, configured.ToolNames);
+        }
+
+        foreach (var name in stateTools)
+        {
+            Assert.Contains(name, configured.ToolNames);
+        }
+
+        var http = Assert.Single(configured.Provider.GetServices<HttpClient>());
+        Assert.Equal("http://127.0.0.1:9/", http.BaseAddress?.ToString());
+        Assert.Single(configured.Provider.GetServices<StateApiClient>());
     }
 
     [Fact]
@@ -155,7 +203,7 @@ public sealed class StateClientTests
         }
     }
 
-    private static string[] ToolNames(bool includeState)
+    private static RegisteredServer Register(StateClientSettings? settings)
     {
         var serializer = new JsonSerializerOptions(McpJsonUtilities.DefaultOptions)
         {
@@ -167,19 +215,32 @@ public sealed class StateClientTests
         var mcp = services
             .AddMcpServer()
             .WithTools<MemoryMcpTools>(serializer);
-        if (includeState)
+        if (settings is not null)
         {
-            StateToolRegistration.Add(
-                services,
-                mcp,
-                new StateClientSettings("http://state.local", "test-token", "hermes"),
-                serializer);
+            StateToolRegistration.Add(services, mcp, settings, serializer);
         }
 
-        using var provider = services.BuildServiceProvider();
-        return provider.GetServices<McpServerTool>()
+        var provider = services.BuildServiceProvider();
+        var names = provider.GetServices<McpServerTool>()
             .Select(tool => tool.ProtocolTool.Name)
             .ToArray();
+        return new RegisteredServer(provider, settings, names);
+    }
+
+    private sealed class RegisteredServer : IDisposable
+    {
+        public RegisteredServer(ServiceProvider provider, StateClientSettings? settings, string[] toolNames)
+        {
+            Provider = provider;
+            Settings = settings;
+            ToolNames = toolNames;
+        }
+
+        public ServiceProvider Provider { get; }
+        public StateClientSettings? Settings { get; }
+        public string[] ToolNames { get; }
+
+        public void Dispose() => Provider.Dispose();
     }
 
     private sealed class StubHandler : HttpMessageHandler

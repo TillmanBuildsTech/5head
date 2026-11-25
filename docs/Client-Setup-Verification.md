@@ -17,12 +17,15 @@ This note closes checklist item 9 by documenting real MCP client setups against 
 
 ## Optional shared state
 
-The same `5head-mcp` command gains `list_matters`, `get_matter`, `create_matter`,
-`update_matter`, `append_event`, `claim_next`, and `release_claim` when the
-client sets `FIVEHEAD_STATE_URL` and `FIVEHEAD_STATE_TOKEN`. `FIVEHEAD_STATE_AGENT`
-names that agent on writes. A lab agent points the URL at `http://127.0.0.1:8080`.
-A cloud agent points it at the Cloudflare Tunnel hostname. Without those two
-variables the tool list is memory-only. See the README section "One server".
+5head is a local memory MCP by default: zero dependencies, no state tools, no
+network calls, no Postgres. Shared State is an optional add-on for multi-agent
+and team setups. The same `5head-mcp` command gains `list_matters`, `get_matter`,
+`create_matter`, `update_matter`, `append_event`, `claim_next`, and `release_claim`
+when the client sets `FIVEHEAD_STATE_URL` and `FIVEHEAD_STATE_TOKEN`.
+`FIVEHEAD_STATE_AGENT` names that agent on writes. A lab agent points the URL at
+`http://127.0.0.1:8080`. A cloud agent points it at the Cloudflare Tunnel hostname.
+Leave both variables unset and the tool list stays the memory tools. See the
+README section "Local memory by default, shared state when you opt in".
 
 ## Recommended launch paths
 

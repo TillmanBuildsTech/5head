@@ -3,6 +3,15 @@
 > Durable, curated, provenance-backed memory for LLM coding assistants.
 > Plugs into Claude Code, GitHub Copilot CLI, Cursor, VS Code — any MCP-compatible client.
 
+**5head is a local memory MCP.** That is the default, and it has zero
+dependencies: the binary, three markdown files, and a local SQLite database.
+With `FIVEHEAD_STATE_URL` and `FIVEHEAD_STATE_TOKEN` unset, it registers only
+the memory tools, opens no network connection, and does not need Postgres.
+
+**Shared State is an optional add-on** for multi-agent and team setups. It
+stays off until both of those variables are set. The same binary then also
+talks to the state API.
+
 ## Why another memory MCP?
 
 - **Curated markdown, not event logs.** Three files (`SOUL.md` / `MEMORY.md` / `USER.md`) with enforced character limits force the agent to distill signal from noise instead of growing an unbounded dump.
@@ -105,11 +114,12 @@ Or put the binary on your PATH and use the bare name:
 
 Client-specific examples and verification notes live in `docs/Client-Setup-Verification.md`.
 
-### One server: memory, and shared state when you ask for it
+### Local memory by default, shared state when you opt in
 
-The same binary always serves the curated memory tools. It also serves shared
-matters (`list_matters`, `get_matter`, `create_matter`, `update_matter`,
-`append_event`, `claim_next`, `release_claim`) when both of these are set:
+The default client config above is the whole product: a local memory MCP.
+Shared State is the optional add-on. The same binary serves shared matters
+(`list_matters`, `get_matter`, `create_matter`, `update_matter`,
+`append_event`, `claim_next`, `release_claim`) only when both of these are set:
 
 | Variable | Meaning |
 |----------|---------|
@@ -117,9 +127,10 @@ matters (`list_matters`, `get_matter`, `create_matter`, `update_matter`,
 | `FIVEHEAD_STATE_TOKEN` | Bearer token, the same value as the API's `STATE_AUTH_TOKEN` |
 | `FIVEHEAD_STATE_AGENT` | Optional name stored on writes and claims. Default `5head` |
 
-Leave the URL and token unset and the process is memory-only: the state tools
-are not registered. Set exactly one of them and the process exits, so a half
-configuration does not look like a memory-only agent.
+Leave both unset and startup matches the memory server from before this
+add-on: the seven memory tools, the three resources, no HTTP client, and no
+Postgres. Set exactly one of them and the process exits, so a half
+configuration does not silently drop back to local-only.
 
 `.agent-memory/config.yaml` may also set `stateApiUrl`, `stateAuthToken`, and
 `stateAgent`. The environment wins. Prefer the token in the client `env` block
@@ -242,7 +253,7 @@ MCP Client (Claude Code / Copilot / Cursor)
     ├── Storage Layer
     │       ├── .agent-memory/{SOUL,MEMORY,USER}.md  (git-tracked)
     │       └── ~/.agent-memory/cache/{hash}/provenance.db  (SQLite WAL)
-    └── State tools (only when FIVEHEAD_STATE_URL and FIVEHEAD_STATE_TOKEN are set)
+    └── Shared State add-on (off unless FIVEHEAD_STATE_URL and FIVEHEAD_STATE_TOKEN are both set)
             │ HTTP, bearer token
             ▼
         FiveHead.State.Api  →  Postgres
@@ -367,8 +378,9 @@ docker compose down
 
 ## Shared state
 
-Curated memory stays in the 5head process. Matters that more than one agent
-must update live in Postgres behind the root compose file. API details,
+Optional add-on for multi-agent and team setups. The local memory MCP does
+not start it and does not require it. Matters that more than one agent must
+update live in Postgres behind the root compose file. API details,
 curl examples, and the tunnel notes are in [`deploy/README.md`](deploy/README.md).
 The API does not write `SOUL.md` / `MEMORY.md` / `USER.md`. The capture
 pattern (proxy hook, explicit `update_matter`, agent-loop backstop,
