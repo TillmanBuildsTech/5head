@@ -12,6 +12,15 @@ public interface IProvenanceStore
 
     Task<long> RecordAsync(ProvenanceRow row, CancellationToken ct = default);
 
+    /// <summary>
+    /// Inserts the write row and retracts the listed rows in one SQLite transaction.
+    /// A failure leaves the database unchanged.
+    /// </summary>
+    Task<long> RecordAndRetractAsync(
+        ProvenanceRow row,
+        IReadOnlyList<FactRetraction> retractions,
+        CancellationToken ct = default);
+
     Task ConfirmAsync(long id, CancellationToken ct = default);
 
     Task RetractAsync(long id, string reason, CancellationToken ct = default);
@@ -24,3 +33,6 @@ public interface IProvenanceStore
     Task<IReadOnlyList<ProvenanceRow>> ListAsync(
         string? targetFile = null, CancellationToken ct = default);
 }
+
+/// <summary>A provenance row to retract in the same transaction as the write that superseded it.</summary>
+public readonly record struct FactRetraction(long Id, string Reason);

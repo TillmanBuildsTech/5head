@@ -1,0 +1,15 @@
+.git
+.github
+**/.vs
+**/bin
+**/obj
+**/TestResults
+test-results
+publish
+tests
+docs
+examples
+*.md
+*.db
+*.db-shm
+*.db-wal

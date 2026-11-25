@@ -47,20 +47,23 @@ public sealed class MemoryServiceRemoveTests : IDisposable
     }
 
     [Fact]
-    public async Task WriteMemoryAsync_RemovePartialContentOnlyChangesFileContent()
+    public async Task WriteMemoryAsync_RemovePartialContentRetractsTheFactThatLeftTheFile()
     {
         await _service.WriteMemoryAsync(MemoryFile.Memory, WriteMode.Append, "- language: C# (primary)", "test");
 
         await _service.WriteMemoryAsync(MemoryFile.Memory, WriteMode.Remove, " (primary)", "test");
 
         var content = await _service.ReadMemoryAsync(MemoryFile.Memory);
+        var active = await _service.ListFactsAsync(MemoryFile.Memory, FactStatus.Active);
         var retracted = await _service.ListFactsAsync(MemoryFile.Memory, FactStatus.Retracted);
-        var history = await _service.GetProvenanceAsync("language", "value");
 
         Assert.Equal("- language: C#", content);
-        Assert.Empty(retracted);
-        Assert.Single(history);
-        Assert.Equal("C# (primary)", history[0].Content.Split(':', 2)[1].Trim());
+        Assert.Single(retracted);
+        Assert.Contains("C# (primary)", retracted[0].Content, StringComparison.Ordinal);
+        Assert.Single(active);
+        Assert.Equal("remove", active[0].Mode);
+        Assert.Contains("C#", active[0].FactKeys, StringComparison.Ordinal);
+        Assert.DoesNotContain("primary", active[0].FactKeys, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -81,19 +84,23 @@ public sealed class MemoryServiceRemoveTests : IDisposable
     }
 
     [Fact]
-    public async Task WriteMemoryAsync_RemoveFormattingVariationKeepsFileButRetractsMatchingFact()
+    public async Task WriteMemoryAsync_RemoveFormattingVariationLeavesTheFileAndTheFactTogether()
     {
         await _service.WriteMemoryAsync(MemoryFile.Memory, WriteMode.Append, "- language: C#", "test");
 
         await _service.WriteMemoryAsync(MemoryFile.Memory, WriteMode.Remove, "1. language: C#", "test");
 
         var content = await _service.ReadMemoryAsync(MemoryFile.Memory);
+        var active = await _service.ListFactsAsync(MemoryFile.Memory, FactStatus.Active);
         var retracted = await _service.ListFactsAsync(MemoryFile.Memory, FactStatus.Retracted);
         var history = await _service.GetProvenanceAsync("language", "value");
 
         Assert.Equal("- language: C#", content);
-        Assert.Single(retracted);
-        Assert.Contains(history, row => row.Mode == "retract" && row.Content == "Removed from active memory.");
+        Assert.Empty(retracted);
+        Assert.Single(active);
+        Assert.Equal("append", active[0].Mode);
+        Assert.Single(history);
+        Assert.DoesNotContain(history, row => row.Mode == "retract");
     }
 
     public void Dispose()

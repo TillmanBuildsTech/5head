@@ -3,6 +3,15 @@
 > Durable, curated, provenance-backed memory for LLM coding assistants.
 > Plugs into Claude Code, GitHub Copilot CLI, Cursor, VS Code — any MCP-compatible client.
 
+**5head is a local memory MCP.** That is the default, and it has zero
+dependencies: the binary, three markdown files, and a local SQLite database.
+With `FIVEHEAD_STATE_URL` and `FIVEHEAD_STATE_TOKEN` unset, it registers only
+the memory tools, opens no network connection, and does not need Postgres.
+
+**Shared State is an optional add-on** for multi-agent and team setups. It
+stays off until both of those variables are set. The same binary then also
+talks to the state API.
+
 ## Why another memory MCP?
 
 - **Curated markdown, not event logs.** Three files (`SOUL.md` / `MEMORY.md` / `USER.md`) with enforced character limits force the agent to distill signal from noise instead of growing an unbounded dump.
@@ -105,6 +114,67 @@ Or put the binary on your PATH and use the bare name:
 
 Client-specific examples and verification notes live in `docs/Client-Setup-Verification.md`.
 
+### Local memory by default, shared state when you opt in
+
+The default client config above is the whole product: a local memory MCP.
+Shared State is the optional add-on. The same binary serves shared matters
+(`list_matters`, `get_matter`, `create_matter`, `update_matter`,
+`append_event`, `claim_next`, `release_claim`) only when both of these are set:
+
+| Variable | Meaning |
+|----------|---------|
+| `FIVEHEAD_STATE_URL` | Base URL of the state API (`docker-compose.yml`) |
+| `FIVEHEAD_STATE_TOKEN` | Bearer token, the same value as the API's `STATE_AUTH_TOKEN` |
+| `FIVEHEAD_STATE_AGENT` | Optional name stored on writes and claims. Default `5head` |
+
+Leave both unset and startup matches the memory server from before this
+add-on: the seven memory tools, the three resources, no HTTP client, and no
+Postgres. Set exactly one of them and the process exits, so a half
+configuration does not silently drop back to local-only.
+
+`.agent-memory/config.yaml` may also set `stateApiUrl`, `stateAuthToken`, and
+`stateAgent`. The environment wins. Prefer the token in the client `env` block
+so it is not committed.
+
+A home-lab Hermes agent talks to the API on localhost. The cloud agent, off
+the LAN, uses the Cloudflare Tunnel hostname. Both run `5head-mcp`. Only the
+env block changes:
+
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "5head-mcp",
+      "env": {
+        "FIVEHEAD_STATE_URL": "http://127.0.0.1:8080",
+        "FIVEHEAD_STATE_TOKEN": "replace-with-a-long-random-token",
+        "FIVEHEAD_STATE_AGENT": "hermes-lab"
+      }
+    }
+  }
+}
+```
+
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "5head-mcp",
+      "env": {
+        "FIVEHEAD_STATE_URL": "https://state.example.com",
+        "FIVEHEAD_STATE_TOKEN": "replace-with-a-long-random-token",
+        "FIVEHEAD_STATE_AGENT": "cloud"
+      }
+    }
+  }
+}
+```
+
+`update_matter` sends the version you last read. If another agent wrote first,
+the tool returns an error that includes the current version and the current
+row. Re-read with `get_matter` and retry. Setup for the API itself, the
+tunnel, and curl examples are in [`deploy/README.md`](deploy/README.md).
+
 ---
 
 ## Memory files
@@ -123,7 +193,13 @@ Optional V1 config lives at `.agent-memory/config.yaml` and supports only these 
 ```yaml
 stalenessThresholdDays: 30
 provenanceDbPath: .cache/provenance.db
+stateApiUrl: http://127.0.0.1:8080
+stateAgent: hermes-lab
 ```
+
+`stateAuthToken` is accepted in that file too. Leave it unset and pass
+`FIVEHEAD_STATE_TOKEN` in the MCP client env instead. The state keys are
+optional; without a URL and a token the server stays memory-only.
 
 `provenanceDbPath` may be absolute or relative to `.agent-memory/`.
 
@@ -137,14 +213,19 @@ That global path is an implementation fallback, not the primary V1 product surfa
 | Tool | Description |
 |------|-------------|
 | `read_memory` | Read SOUL, MEMORY, or USER file |
-| `write_memory` | Append, replace, or remove content (`replace` is the V1 manual compaction path; checked against size limit + contradictions) |
+| `write_memory` | Append, replace, or remove content (`replace` is the V1 manual compaction path; checked against size limit + contradictions). Optional `expectedContentHash` fails the write if the file changed since it was read |
 | `check_contradictions` | Dry-run conflict detection before a write |
 | `list_facts` | List active/confirmed/uncertain/retracted facts |
 | `confirm_fact` | Explicitly confirm a provenance row |
 | `retract_fact` | Explicitly retract a provenance row |
 | `get_provenance` | Full history for a subject+predicate pair |
+| `list_matters`, `get_matter`, `create_matter`, `update_matter`, `append_event`, `claim_next`, `release_claim` | Shared matters. Present only when `FIVEHEAD_STATE_URL` and `FIVEHEAD_STATE_TOKEN` are set |
 
 For V1, compaction is intentionally narrow: use an explicit `replace` write when a memory file needs cleanup or consolidation. 5head records the replacement in provenance and retracts facts from the prior file state when they no longer appear. It does not run automated compaction or background cleanup.
+
+`read_memory` returns the file text plus a `contentHash` (SHA-256 of the UTF-8 bytes). Pass that hash back as `expectedContentHash` on the next `write_memory`. If another writer landed first, the call fails and the file is left as-is. Writes also take a per-file cross-process lock, and the file is replaced by a temp-file rename in the same step as the provenance transaction (the previous bytes are restored if the database write fails).
+
+`remove` retracts a fact only when that fact is no longer in the file after the string removal. A remove string that does not match the file does not retract a fact that is still there. A partial removal that changes a fact line retracts the old fact and records the fact the file now contains.
 
 ---
 
@@ -165,14 +246,17 @@ MCP Client (Claude Code / Copilot / Cursor)
     │ MCP JSON-RPC / stdio
     ▼
 5head-mcp (.NET 9, Native AOT)
-    ├── Tools Layer
-    ├── Resources Layer
+    ├── Memory tools and resources
     ├── Contradiction Checker
     ├── Size Limit Guard
     ├── Fact Extractor
-    └── Storage Layer
-            ├── .agent-memory/{SOUL,MEMORY,USER}.md  (git-tracked)
-            └── ~/.agent-memory/cache/{hash}/provenance.db  (SQLite WAL)
+    ├── Storage Layer
+    │       ├── .agent-memory/{SOUL,MEMORY,USER}.md  (git-tracked)
+    │       └── ~/.agent-memory/cache/{hash}/provenance.db  (SQLite WAL)
+    └── Shared State add-on (off unless FIVEHEAD_STATE_URL and FIVEHEAD_STATE_TOKEN are both set)
+            │ HTTP, bearer token
+            ▼
+        FiveHead.State.Api  →  Postgres
 ```
 
 ---
@@ -184,12 +268,16 @@ MCP Client (Claude Code / Copilot / Cursor)
 - **Snapshot build** — every PR against `main` runs `ci.yml`: build + test +
   Native AOT for all platforms, and publishes the binaries as a rolling
   `snapshot` **pre-release** for trying unreleased builds.
-- **Production release** — merging that PR to `main` runs `release.yml`: it
-  rebuilds the exact release binaries, publishes a GitHub Release `v<version>`
-  (with the one-line installer and the platform binaries as assets), then bumps
-  the version (patch by default; `[release:minor]` / `[release:major]` in the
-  merge message bumps that part) and opens a release PR carrying the bump back
-  to `main` (main is PR-only, so the bot cannot push directly).
+- **Production release** — merging to `main` runs `release.yml`: it rebuilds
+  the exact release binaries, publishes a GitHub Release `v<version>` (with
+  the one-line installer and the platform binaries as assets, marked latest),
+  then bumps the version (patch by default; `[release:minor]` /
+  `[release:major]` in the merge message bumps that part) and opens a release
+  PR carrying the bump back to `main` (main is PR-only, so the bot cannot push
+  directly). The bump PR does **not** publish a GitHub Release. An empty
+  stable release would become `releases/latest` and the installer URL would
+  404. Merging the bump is skipped because its commit message is
+  `chore(release): bump`.
 
 There is **no npm package and no registry** — distribution is entirely through
 GitHub Releases. Every release carries:
@@ -225,6 +313,79 @@ Requirements: .NET 9 SDK.
 
 ---
 
+## Deploy on Coolify
+
+The only compose file is [`docker-compose.yml`](docker-compose.yml) at the
+repository root. Import the repo as a Docker Compose resource with base
+directory `/` and compose location `docker-compose.yml`.
+
+Coolify generates these and keeps them across deploys. Leave the local
+defaults unset so the generated values win:
+
+| Variable | What it becomes |
+|----------|-----------------|
+| `SERVICE_USER_POSTGRES` | Postgres user |
+| `SERVICE_PASSWORD_64_POSTGRES` | Postgres password, shared with the API connection string |
+| `SERVICE_PASSWORD_64_FIVEHEAD` | Bearer token. The API reads it as `STATE_AUTH_TOKEN` |
+| `SERVICE_URL_API_8080` | Public URL. The proxy sends it to container port 8080 |
+
+On the `api` service, set the domain to `https://state.example.com:8080`.
+The `:8080` tells Coolify which container port to use. Browsers still use
+443. Do not give `postgres` a domain or a host port. Its data is the named
+volume `state-postgres`.
+
+The API process applies `src/FiveHead.State.Api/Migrations` before it listens.
+`GET /health` does not need the token and pings Postgres, so a healthy check
+means the migrations have finished.
+
+Point each `5head-mcp` at that deployment. The token is the generated
+`SERVICE_PASSWORD_64_FIVEHEAD` value, copied out of Coolify's environment
+page. The URL is the public hostname without the container port:
+
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "5head-mcp",
+      "env": {
+        "FIVEHEAD_STATE_URL": "https://state.example.com",
+        "FIVEHEAD_STATE_TOKEN": "the-SERVICE_PASSWORD_64_FIVEHEAD-value",
+        "FIVEHEAD_STATE_AGENT": "cloud"
+      }
+    }
+  }
+}
+```
+
+A lab agent on the same machine can use `http://127.0.0.1:8080` instead of
+the public hostname. Use a different `FIVEHEAD_STATE_AGENT` per agent.
+
+### Local smoke test
+
+From the repository root, with Docker Compose v2. No `.env` is required.
+The local defaults are user `state`, password `state`, token
+`local-dev-token`, and API port 8080. Those are for a private smoke test.
+Copy [`.env.example`](.env.example) to `.env` to replace them.
+
+```sh
+docker compose up --build -d
+curl -fsS http://127.0.0.1:8080/health
+docker compose down
+```
+
+`curl` prints `{"status":"ok"}`. Postgres is only reachable as the hostname
+`postgres` on the compose network.
+
+## Shared state
+
+Optional add-on for multi-agent and team setups. The local memory MCP does
+not start it and does not require it. Matters that more than one agent must
+update live in Postgres behind the root compose file. API details,
+curl examples, and the tunnel notes are in [`deploy/README.md`](deploy/README.md).
+The API does not write `SOUL.md` / `MEMORY.md` / `USER.md`. The capture
+pattern (proxy hook, explicit `update_matter`, agent-loop backstop,
+reconcile sweep) is [`docs/capture-pattern.md`](docs/capture-pattern.md).
+
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE). Copyright 2026 TillmanBuildsTech / Brandon Tillman.

@@ -6,6 +6,9 @@ namespace FiveHead.Mcp.Core.Storage;
 /// <summary>Read/write access to the markdown memory files on disk.</summary>
 public interface IMemoryFileStore
 {
+    /// <summary>Absolute memory root. Lock names are derived from this path.</summary>
+    string RootPath { get; }
+
     /// <summary>Returns the content of the file, or an empty string if not yet created.</summary>
     Task<string> ReadAsync(MemoryFile file, CancellationToken ct = default);
 
@@ -18,6 +21,9 @@ public interface IMemoryFileStore
         WriteMode  mode,
         string     content,
         CancellationToken ct = default);
+
+    /// <summary>Atomically replaces the file with <paramref name="content"/> (temp file, then rename).</summary>
+    Task ReplaceAllAsync(MemoryFile file, string content, CancellationToken ct = default);
 
     /// <summary>Ensures the <c>.agent-memory/</c> directory and default files exist.</summary>
     Task EnsureInitializedAsync(CancellationToken ct = default);

@@ -1,171 +1,39 @@
-# MVP Gap Checklist
+# MVP gap checklist
 
-This checklist reflects the current codebase, not just the product docs. It is meant to guide the next implementation session.
+Updated to match the tree as of the shared-state change. Older copies of this
+file described work that had already landed (structured tool payloads, config
+loading, contradiction and remove tests, a release workflow).
 
-## Already Implemented
+## Shipped
 
-- Three repo-local memory files with enforced limits via `MemoryFileStore` and `MemoryLimits`
-- Read, write, append, replace, and remove flows via `MemoryService`
+- Three repo-local memory files with enforced limits (`MemoryFileStore`, `MemoryLimits`)
+- Read, append, replace, and remove through `MemoryService`
 - Fact extraction from markdown-style lines
-- SQLite provenance store with confirm, retract, list, and history support
-- Derived fact statuses: `active`, `confirmed`, `uncertain`, `retracted`
-- Contradiction checking that blocks conflicting `active` and `confirmed` facts
-- MCP tools for:
-  - `read_memory`
-  - `write_memory`
-  - `check_contradictions`
-  - `list_facts`
-  - `confirm_fact`
-  - `retract_fact`
-  - `get_provenance`
-- MCP resources for:
-  - `memory://soul`
-  - `memory://memory`
-  - `memory://user`
-- Passing unit and stdio integration tests via `dotnet test`
+- SQLite provenance with confirm, retract, list, and history
+- Derived statuses: `active`, `confirmed`, `uncertain`, `retracted`
+- Contradiction checks that block conflicting `active` and `confirmed` facts. `uncertain` facts stay visible and do not block writes (`MemoryServiceUncertainFactTests`)
+- MCP tools: `read_memory`, `write_memory`, `check_contradictions`, `list_facts`, `confirm_fact`, `retract_fact`, `get_provenance`
+- Structured payloads for contradictions, fact lists, provenance history, and the read/write content hash
+- MCP resources: `memory://soul`, `memory://memory`, `memory://user`
+- Minimal `.agent-memory/config.yaml` loader (`stalenessThresholdDays`, `provenanceDbPath`, and optional `stateApiUrl` / `stateAuthToken` / `stateAgent`). Dapper and YamlDotNet are not used
+- Repo-first root selection, with `~/.agent-memory/global/` only as an unmarketed fallback
+- Manual `replace` as the only compaction path
+- Registry-free GitHub Release installer (`scripts/install.js`) and Native AOT publish for the five RIDs
+- Write path: per-file cross-process locks, temp-file rename, expected content hash, provenance transaction with file restore on failure, SQLite `busy_timeout`, errors for unknown and already-retracted ids
+- `remove` keeps the file and the extracted facts together: a fact is retracted when it is absent from the file after the removal, not merely because the remove string parsed as that fact
+- Shared matter service in `src/FiveHead.State.Api` (separate process, Postgres). The same `5head-mcp` process exposes its tools only when `FIVEHEAD_STATE_URL` and `FIVEHEAD_STATE_TOKEN` are set
 
-## Main Gaps To Close
+## Still open
 
-### 1. Return richer MCP payloads
+- `ci.yml` stdout-silence job is still a placeholder. It does not yet pipe an initialize request
+- Real MCP client setups (Claude Code, Cursor, Copilot) are documented, not exercised in CI
+- `docs/Packaging-Verification.md` still describes the removed npm wrapper. The README is the packaging contract
+- A crash between the file rename and the provenance commit can still leave one write unrecorded. Exceptions roll the file back; a killed process cannot
+- `expectedContentHash` is optional so existing clients keep working. Callers that omit it are serialized by the lock but a `replace` computed from a stale read can still overwrite if the caller does not send the hash
+- The state API uses one shared bearer token. Agent names are self-asserted. There are no per-agent credentials
+- The state service does not embed or query a vector database. `vectorRef` is only a pointer
 
-Current tool responses are mostly summary strings like `count=...` and `provenanceId=...`.
+## Not in this product
 
-Next work:
-
-- Return structured content for `check_contradictions`
-- Return structured content for `list_facts`
-- Return structured content for `get_provenance`
-- Keep readable text summaries, but include machine-usable payloads too
-
-### 2. Harden contradiction behavior with tests
-
-Current behavior looks reasonable, but it needs sharper test coverage.
-
-Next work:
-
-- Test same-file `replace` with changed facts
-- Test cross-file contradiction detection
-- Test same-file replace that should supersede prior facts cleanly
-- Confirm intended behavior when candidate facts conflict with facts in other memory files
-
-### 3. Harden `remove` behavior with tests
-
-Current `remove` behavior is string replacement plus fact-based provenance retraction.
-
-Next work:
-
-- Test remove no-op behavior
-- Test partial content removal
-- Test duplicate fact lines
-- Test formatting variation in removed markdown lines
-
-### 4. Make `uncertain` blocking behavior explicit
-
-Right now only `active` and `confirmed` facts block contradictory writes. `uncertain` facts do not.
-
-Next work:
-
-- Decide whether this is the intended MVP rule
-- Add tests that lock the rule in
-
-Recommended MVP choice:
-
-- `uncertain` facts should not block writes, but should remain visible through listing and provenance history
-
-### 5. Decide whether config is real in V1
-
-`AgentMemoryConfig` exists, but host wiring currently uses default config only.
-
-Fields not clearly wired yet:
-
-- `PerPackageMode`
-- `ProvenanceDbPath`
-- `SizeLimitOverrides`
-- loading from `.agent-memory/config.yaml`
-
-Next work:
-
-- Either implement minimal config loading for values actually needed in V1
-- Or explicitly defer config loading and keep defaults only for V1
-
-Recommended MVP choice:
-
-- Keep config minimal, only implement it if needed for staleness threshold or DB path override
-
-### 6. Reconcile repo-local MVP scope with global fallback
-
-`MemoryRootLocator` currently falls back to `~/.agent-memory/global` when no repo root is found.
-
-Next work:
-
-- Decide whether V1 should require repo context
-- Or keep repo-first behavior with global fallback for convenience
-
-Recommended MVP choice:
-
-- Keep repo-first behavior if it does not complicate the code, but do not market global memory as a V1 feature
-
-### 7. Define compaction narrowly for V1
-
-Staleness exists. Automated compaction does not really exist yet.
-
-Next work:
-
-- Decide whether manual `replace` is the only MVP compaction primitive
-- Avoid building large automated compaction systems in V1 unless there is a very small, obvious implementation
-
-Recommended MVP choice:
-
-- Treat manual `replace` as the compaction path for V1
-
-### 8. Prove packaging end-to-end
-
-The repo has npm packaging metadata, but packaging proof is still incomplete.
-
-Next work:
-
-- Verify local binary run flow
-- Verify npm wrapper flow
-- Verify expected release artifact assumptions
-- Confirm install docs match reality
-
-### 9. Prove 2-3 real MCP client setups
-
-There is stdio integration coverage, but V1 still needs proof with real clients.
-
-Next work:
-
-- Test and document at least 2-3 real MCP-compatible clients
-- Add setup examples that match the actual shipped package flow
-
-## Recommended Next-Session Order
-
-1. Upgrade MCP tool responses to include structured payloads
-2. Add edge-case tests for contradiction and remove behavior
-3. Make the repo-scope decision explicit
-4. Make the config decision explicit
-5. Define compaction narrowly and keep it small
-6. Verify packaging end-to-end
-7. Prove 2-3 client setups and document them
-
-## Fastest Credible V1 Path
-
-If speed matters most, prioritize in this order:
-
-1. richer MCP outputs
-2. edge-case tests
-3. packaging proof
-4. client proof
-5. config loading only if still needed
-
-## Key Files Reviewed
-
-- `src/FiveHead.Mcp.Core/Memory/MemoryService.cs`
-- `src/FiveHead.Mcp.Core/Storage/MemoryFileStore.cs`
-- `src/FiveHead.Mcp.Core/Storage/SqliteProvenanceStore.cs`
-- `src/FiveHead.Mcp.Host/MemoryMcpTools.cs`
-- `src/FiveHead.Mcp.Host/MemoryMcpResources.cs`
-- `src/FiveHead.Mcp.Host/McpServer.cs`
-- `tests/FiveHead.Mcp.Tests/MemoryServiceTests.cs`
-- `tests/FiveHead.Mcp.Tests/MemoryMcpSurfaceTests.cs`
-- `tests/FiveHead.Mcp.Tests/StdioMcpIntegrationTests.cs`
+- Automated compaction, embeddings, or a hosted memory account
+- Using the shared-state event log as a substitute for `SOUL.md` / `MEMORY.md` / `USER.md`

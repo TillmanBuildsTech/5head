@@ -14,8 +14,21 @@ public sealed class MemoryMcpTools(IMemoryService memoryService)
     private readonly IMemoryService _memoryService = memoryService;
 
     [McpServerTool]
-    public Task<string> read_memory(string file, CancellationToken ct = default) =>
-        ExecuteAsync(() => _memoryService.ReadMemoryAsync(ParseMemoryFile(file), ct));
+    public Task<CallToolResult> read_memory(string file, CancellationToken ct = default) =>
+        ExecuteAsync(async () =>
+        {
+            var memoryFile = ParseMemoryFile(file);
+            var content = await _memoryService.ReadMemoryAsync(memoryFile, ct);
+            return Success(
+                content,
+                new MemoryReadPayload
+                {
+                    File = MemoryLimits.FileName(memoryFile),
+                    ContentHash = MemoryContentHash.Compute(content),
+                    CharCount = content.Length
+                },
+                HostJsonSerializerContext.Default.MemoryReadPayload);
+        });
 
     [McpServerTool]
     public Task<CallToolResult> write_memory(
@@ -25,6 +38,7 @@ public sealed class MemoryMcpTools(IMemoryService memoryService)
         string? sourceKind = null,
         string? threadId = null,
         string? taskId = null,
+        string? expectedContentHash = null,
         CancellationToken ct = default) =>
         ExecuteAsync(async () =>
         {
@@ -35,13 +49,17 @@ public sealed class MemoryMcpTools(IMemoryService memoryService)
                 string.IsNullOrWhiteSpace(sourceKind) ? "mcp" : sourceKind,
                 threadId,
                 taskId,
+                expectedContentHash,
                 ct);
 
             var warningText = result.Warnings.Length == 0
                 ? "none"
                 : string.Join(", ", result.Warnings);
 
-            return SuccessText($"provenanceId={result.ProvenanceId}; warnings={warningText}");
+            return Success(
+                $"provenanceId={result.ProvenanceId}; warnings={warningText}; contentHash={result.ContentHash}",
+                result,
+                HostJsonSerializerContext.Default.WriteMemoryResult);
         });
 
     [McpServerTool]
@@ -201,6 +219,12 @@ public sealed class MemoryMcpTools(IMemoryService memoryService)
                 return true;
             case ContradictionException contradiction:
                 mcpException = new McpException(contradiction.Message, contradiction);
+                return true;
+            case StaleWriteException stale:
+                mcpException = new McpException(stale.Message, stale);
+                return true;
+            case MemoryLockTimeoutException busy:
+                mcpException = new McpException(busy.Message, busy);
                 return true;
             case SizeLimitExceededException sizeLimit:
                 mcpException = new McpException(sizeLimit.Message, sizeLimit);

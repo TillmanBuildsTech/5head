@@ -5,6 +5,7 @@ using System.Text.Json.Serialization.Metadata;
 using FiveHead.Mcp.Core.Config;
 using FiveHead.Mcp.Core.Memory;
 using FiveHead.Mcp.Core.Storage;
+using FiveHead.State.Client;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -21,20 +22,14 @@ internal static class McpServer
         var builder = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder(args);
         builder.Logging.ClearProviders();
 
-        builder.Services.AddSingleton<IMemoryRootLocator, MemoryRootLocator>();
-        builder.Services.AddSingleton(sp =>
-        {
-            var locator = sp.GetRequiredService<IMemoryRootLocator>();
-            var memoryRoot = locator.Locate(Directory.GetCurrentDirectory());
-            return LoadConfig(memoryRoot);
-        });
-        builder.Services.AddSingleton(sp =>
-        {
-            var locator = sp.GetRequiredService<IMemoryRootLocator>();
-            var memoryRoot = locator.Locate(Directory.GetCurrentDirectory());
-            var config = sp.GetRequiredService<AgentMemoryConfig>();
-            return HostPaths.Create(memoryRoot, config);
-        });
+        var locator = new MemoryRootLocator();
+        var memoryRoot = locator.Locate(Directory.GetCurrentDirectory());
+        var config = LoadConfig(memoryRoot);
+        var state = StateClientSettings.Resolve(config.StateApiUrl, config.StateAuthToken, config.StateAgent);
+
+        builder.Services.AddSingleton<IMemoryRootLocator>(locator);
+        builder.Services.AddSingleton(config);
+        builder.Services.AddSingleton(HostPaths.Create(memoryRoot, config));
         builder.Services.AddSingleton<IMemoryFileStore>(sp =>
         {
             var paths = sp.GetRequiredService<HostPaths>();
@@ -51,10 +46,16 @@ internal static class McpServer
 
         var serializerOptions = CreateSerializerOptions();
 
-        builder.Services
+        var mcp = builder.Services
             .AddMcpServer()
             .WithStdioServerTransport()
-            .WithTools<MemoryMcpTools>(serializerOptions)
+            .WithTools<MemoryMcpTools>(serializerOptions);
+        if (state is not null)
+        {
+            StateToolRegistration.Add(builder.Services, mcp, state, serializerOptions);
+        }
+
+        mcp
             .WithListResourcesHandler(async (request, ct) =>
             {
                 var resources = request.Services.GetRequiredService<MemoryMcpResources>();
@@ -106,6 +107,24 @@ internal static class McpServer
             if (key.Equals(nameof(AgentMemoryConfig.ProvenanceDbPath), StringComparison.OrdinalIgnoreCase))
             {
                 config.ProvenanceDbPath = string.IsNullOrWhiteSpace(value) ? null : value;
+                continue;
+            }
+
+            if (key.Equals(nameof(AgentMemoryConfig.StateApiUrl), StringComparison.OrdinalIgnoreCase))
+            {
+                config.StateApiUrl = string.IsNullOrWhiteSpace(value) ? null : value;
+                continue;
+            }
+
+            if (key.Equals(nameof(AgentMemoryConfig.StateAuthToken), StringComparison.OrdinalIgnoreCase))
+            {
+                config.StateAuthToken = string.IsNullOrWhiteSpace(value) ? null : value;
+                continue;
+            }
+
+            if (key.Equals(nameof(AgentMemoryConfig.StateAgent), StringComparison.OrdinalIgnoreCase))
+            {
+                config.StateAgent = string.IsNullOrWhiteSpace(value) ? null : value;
             }
         }
 
