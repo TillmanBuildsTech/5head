@@ -9,7 +9,6 @@ publish
 tests
 docs
 examples
-deploy
 *.md
 *.db
 *.db-shm

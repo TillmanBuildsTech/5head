@@ -1,0 +1,56 @@
+# One stack for a local smoke test and for Coolify's Docker Compose import.
+# Build context is the repository root. The API applies SQL migrations before
+# it listens (see src/FiveHead.State.Api/Program.cs). Postgres has no host port.
+#
+# Coolify generates SERVICE_USER_POSTGRES, SERVICE_PASSWORD_64_POSTGRES, and
+# SERVICE_PASSWORD_64_FIVEHEAD, and routes SERVICE_URL_API_8080 to container
+# port 8080. When those are unset, the local defaults below are used:
+# user state, password state, token local-dev-token, API host port 8080.
+# Replace the defaults before this host is reachable. See .env.example.
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${SERVICE_USER_POSTGRES:-${POSTGRES_USER:-state}}
+      POSTGRES_PASSWORD: ${SERVICE_PASSWORD_64_POSTGRES:-${POSTGRES_PASSWORD:-state}}
+      POSTGRES_DB: ${POSTGRES_DB:-state}
+    volumes:
+      - state-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SERVICE_USER_POSTGRES:-${POSTGRES_USER:-state}} -d ${POSTGRES_DB:-state}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    environment:
+      SERVICE_URL_API_8080: /
+      POSTGRES_USER: ${SERVICE_USER_POSTGRES:-${POSTGRES_USER:-state}}
+      POSTGRES_PASSWORD: ${SERVICE_PASSWORD_64_POSTGRES:-${POSTGRES_PASSWORD:-state}}
+      POSTGRES_DB: ${POSTGRES_DB:-state}
+      STATE_DATABASE_URL: Host=postgres;Port=5432;Username=${SERVICE_USER_POSTGRES:-${POSTGRES_USER:-state}};Password=${SERVICE_PASSWORD_64_POSTGRES:-${POSTGRES_PASSWORD:-state}};Database=${POSTGRES_DB:-state}
+      STATE_AUTH_TOKEN: ${SERVICE_PASSWORD_64_FIVEHEAD:-${FIVEHEAD_STATE_TOKEN:-local-dev-token}}
+      FIVEHEAD_STATE_TOKEN: ${SERVICE_PASSWORD_64_FIVEHEAD:-${FIVEHEAD_STATE_TOKEN:-local-dev-token}}
+      STATE_CLAIM_TTL_SECONDS: ${STATE_CLAIM_TTL_SECONDS:-300}
+      ASPNETCORE_URLS: http://+:8080
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  state-postgres:

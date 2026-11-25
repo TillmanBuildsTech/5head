@@ -113,7 +113,7 @@ matters (`list_matters`, `get_matter`, `create_matter`, `update_matter`,
 
 | Variable | Meaning |
 |----------|---------|
-| `FIVEHEAD_STATE_URL` | Base URL of the state API (`deploy/`) |
+| `FIVEHEAD_STATE_URL` | Base URL of the state API (`docker-compose.yml`) |
 | `FIVEHEAD_STATE_TOKEN` | Bearer token, the same value as the API's `STATE_AUTH_TOKEN` |
 | `FIVEHEAD_STATE_AGENT` | Optional name stored on writes and claims. Default `5head` |
 
@@ -302,14 +302,77 @@ Requirements: .NET 9 SDK.
 
 ---
 
+## Deploy on Coolify
+
+The only compose file is [`docker-compose.yml`](docker-compose.yml) at the
+repository root. Import the repo as a Docker Compose resource with base
+directory `/` and compose location `docker-compose.yml`.
+
+Coolify generates these and keeps them across deploys. Leave the local
+defaults unset so the generated values win:
+
+| Variable | What it becomes |
+|----------|-----------------|
+| `SERVICE_USER_POSTGRES` | Postgres user |
+| `SERVICE_PASSWORD_64_POSTGRES` | Postgres password, shared with the API connection string |
+| `SERVICE_PASSWORD_64_FIVEHEAD` | Bearer token. The API reads it as `STATE_AUTH_TOKEN` |
+| `SERVICE_URL_API_8080` | Public URL. The proxy sends it to container port 8080 |
+
+On the `api` service, set the domain to `https://state.example.com:8080`.
+The `:8080` tells Coolify which container port to use. Browsers still use
+443. Do not give `postgres` a domain or a host port. Its data is the named
+volume `state-postgres`.
+
+The API process applies `src/FiveHead.State.Api/Migrations` before it listens.
+`GET /health` does not need the token and pings Postgres, so a healthy check
+means the migrations have finished.
+
+Point each `5head-mcp` at that deployment. The token is the generated
+`SERVICE_PASSWORD_64_FIVEHEAD` value, copied out of Coolify's environment
+page. The URL is the public hostname without the container port:
+
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "5head-mcp",
+      "env": {
+        "FIVEHEAD_STATE_URL": "https://state.example.com",
+        "FIVEHEAD_STATE_TOKEN": "the-SERVICE_PASSWORD_64_FIVEHEAD-value",
+        "FIVEHEAD_STATE_AGENT": "cloud"
+      }
+    }
+  }
+}
+```
+
+A lab agent on the same machine can use `http://127.0.0.1:8080` instead of
+the public hostname. Use a different `FIVEHEAD_STATE_AGENT` per agent.
+
+### Local smoke test
+
+From the repository root, with Docker Compose v2. No `.env` is required.
+The local defaults are user `state`, password `state`, token
+`local-dev-token`, and API port 8080. Those are for a private smoke test.
+Copy [`.env.example`](.env.example) to `.env` to replace them.
+
+```sh
+docker compose up --build -d
+curl -fsS http://127.0.0.1:8080/health
+docker compose down
+```
+
+`curl` prints `{"status":"ok"}`. Postgres is only reachable as the hostname
+`postgres` on the compose network.
+
 ## Shared state
 
 Curated memory stays in the 5head process. Matters that more than one agent
-must update live in Postgres behind [`deploy/`](deploy/README.md). The same
-MCP server calls that API when it is configured. The API does not write
-`SOUL.md` / `MEMORY.md` / `USER.md`. The capture pattern (proxy hook, explicit
-`update_matter`, agent-loop backstop, reconcile sweep) is
-[`docs/capture-pattern.md`](docs/capture-pattern.md).
+must update live in Postgres behind the root compose file. API details,
+curl examples, and the tunnel notes are in [`deploy/README.md`](deploy/README.md).
+The API does not write `SOUL.md` / `MEMORY.md` / `USER.md`. The capture
+pattern (proxy hook, explicit `update_matter`, agent-loop backstop,
+reconcile sweep) is [`docs/capture-pattern.md`](docs/capture-pattern.md).
 
 ## License
 

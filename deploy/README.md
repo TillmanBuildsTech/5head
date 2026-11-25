@@ -23,19 +23,25 @@ is not published as Native AOT. The stdio host that calls it is.
 | `tests/FiveHead.State.Tests` | 409, claim exclusivity, owner rule, auth |
 | `examples/` | LiteLLM callback, generic ASGI snippet, reconcile sweep |
 | `docs/capture-pattern.md` | Proxy hook, explicit updates, agent backstop, reconcile sweep |
-| `deploy/docker-compose.yml` | Postgres 16 + the API |
+| `docker-compose.yml` (repo root) | Postgres 16 + the API. The only compose file |
 
 ## Run
 
+From the repository root. Postgres is not published on the host. The API
+listens on `http://127.0.0.1:8080` and applies migrations before it accepts
+traffic. With no `.env`, the local defaults are database user `state`,
+password `state`, and bearer token `local-dev-token`.
+
 ```sh
-cd deploy
-cp .env.example .env
-# edit STATE_AUTH_TOKEN; openssl rand -hex 32
-docker compose up --build
+docker compose up --build -d
+curl -fsS http://127.0.0.1:8080/health
+docker compose down
 ```
 
-The API listens on `http://localhost:8080`. Postgres is on `localhost:5432`
-for local debugging. Do not publish Postgres through the tunnel.
+Copy `.env.example` to `.env` before using any other password or token.
+Coolify setup, including which generated values to copy into
+`FIVEHEAD_STATE_URL` and `FIVEHEAD_STATE_TOKEN`, is in the root README
+section "Deploy on Coolify".
 
 ### Environment
 
@@ -51,7 +57,9 @@ for local debugging. Do not publish Postgres through the tunnel.
 | `STATE_AUTH_TOKEN` | hooks | Same secret, sent as the bearer token |
 | `STATE_AGENT_NAME` | hooks | Name stored on events the proxy appends |
 | `STATE_MATTER_ID` | LiteLLM hook | Fallback matter when request metadata has none |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Compose | Database bootstrap. Dev defaults only |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Compose | Local overrides. Defaults `state` / `state` / `state` |
+| `SERVICE_USER_POSTGRES` / `SERVICE_PASSWORD_64_POSTGRES` / `SERVICE_PASSWORD_64_FIVEHEAD` | Coolify | Generated credentials. They replace the local defaults |
+| `API_PORT` | Compose | Host port for the API only (default 8080). Postgres has no host port |
 
 The token is compared with SHA-256 and `CryptographicOperations.FixedTimeEquals`.
 The token is the trust boundary. `agent` is attribution: anyone holding the
@@ -75,7 +83,7 @@ Authorization: Bearer <STATE_AUTH_TOKEN>
 Prefer a named tunnel over `cloudflared tunnel --url`, so the hostname stays
 stable. Cloudflare Access in front of the hostname is optional extra; the
 bearer token is what the API checks. Keep the token out of URLs and out of
-git. `deploy/.env` is gitignored.
+git. `.env` is gitignored.
 
 ### 5head
 
