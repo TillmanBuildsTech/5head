@@ -4,7 +4,7 @@
 A periodic sweep. It does not change rows. An operator, or a cron'd agent, reads
 the list and calls update_matter / append_event for anything the turn hooks missed.
 
-    STATE_API_URL=http://localhost:8080 STATE_AUTH_TOKEN=... python3 scripts/reconcile.py
+    STATE_API_URL=http://localhost:8080 STATE_AUTH_TOKEN=... python3 examples/reconcile.py
 """
 
 from __future__ import annotations

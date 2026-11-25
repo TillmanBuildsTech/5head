@@ -105,6 +105,65 @@ Or put the binary on your PATH and use the bare name:
 
 Client-specific examples and verification notes live in `docs/Client-Setup-Verification.md`.
 
+### One server: memory, and shared state when you ask for it
+
+The same binary always serves the curated memory tools. It also serves shared
+matters (`list_matters`, `get_matter`, `create_matter`, `update_matter`,
+`append_event`, `claim_next`, `release_claim`) when both of these are set:
+
+| Variable | Meaning |
+|----------|---------|
+| `FIVEHEAD_STATE_URL` | Base URL of the state API (`deploy/`) |
+| `FIVEHEAD_STATE_TOKEN` | Bearer token, the same value as the API's `STATE_AUTH_TOKEN` |
+| `FIVEHEAD_STATE_AGENT` | Optional name stored on writes and claims. Default `5head` |
+
+Leave the URL and token unset and the process is memory-only: the state tools
+are not registered. Set exactly one of them and the process exits, so a half
+configuration does not look like a memory-only agent.
+
+`.agent-memory/config.yaml` may also set `stateApiUrl`, `stateAuthToken`, and
+`stateAgent`. The environment wins. Prefer the token in the client `env` block
+so it is not committed.
+
+A home-lab Hermes agent talks to the API on localhost. The cloud agent, off
+the LAN, uses the Cloudflare Tunnel hostname. Both run `5head-mcp`. Only the
+env block changes:
+
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "5head-mcp",
+      "env": {
+        "FIVEHEAD_STATE_URL": "http://127.0.0.1:8080",
+        "FIVEHEAD_STATE_TOKEN": "replace-with-a-long-random-token",
+        "FIVEHEAD_STATE_AGENT": "hermes-lab"
+      }
+    }
+  }
+}
+```
+
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "5head-mcp",
+      "env": {
+        "FIVEHEAD_STATE_URL": "https://state.example.com",
+        "FIVEHEAD_STATE_TOKEN": "replace-with-a-long-random-token",
+        "FIVEHEAD_STATE_AGENT": "cloud"
+      }
+    }
+  }
+}
+```
+
+`update_matter` sends the version you last read. If another agent wrote first,
+the tool returns an error that includes the current version and the current
+row. Re-read with `get_matter` and retry. Setup for the API itself, the
+tunnel, and curl examples are in [`deploy/README.md`](deploy/README.md).
+
 ---
 
 ## Memory files
@@ -123,7 +182,13 @@ Optional V1 config lives at `.agent-memory/config.yaml` and supports only these 
 ```yaml
 stalenessThresholdDays: 30
 provenanceDbPath: .cache/provenance.db
+stateApiUrl: http://127.0.0.1:8080
+stateAgent: hermes-lab
 ```
+
+`stateAuthToken` is accepted in that file too. Leave it unset and pass
+`FIVEHEAD_STATE_TOKEN` in the MCP client env instead. The state keys are
+optional; without a URL and a token the server stays memory-only.
 
 `provenanceDbPath` may be absolute or relative to `.agent-memory/`.
 
@@ -143,6 +208,7 @@ That global path is an implementation fallback, not the primary V1 product surfa
 | `confirm_fact` | Explicitly confirm a provenance row |
 | `retract_fact` | Explicitly retract a provenance row |
 | `get_provenance` | Full history for a subject+predicate pair |
+| `list_matters`, `get_matter`, `create_matter`, `update_matter`, `append_event`, `claim_next`, `release_claim` | Shared matters. Present only when `FIVEHEAD_STATE_URL` and `FIVEHEAD_STATE_TOKEN` are set |
 
 For V1, compaction is intentionally narrow: use an explicit `replace` write when a memory file needs cleanup or consolidation. 5head records the replacement in provenance and retracts facts from the prior file state when they no longer appear. It does not run automated compaction or background cleanup.
 
@@ -169,14 +235,17 @@ MCP Client (Claude Code / Copilot / Cursor)
     │ MCP JSON-RPC / stdio
     ▼
 5head-mcp (.NET 9, Native AOT)
-    ├── Tools Layer
-    ├── Resources Layer
+    ├── Memory tools and resources
     ├── Contradiction Checker
     ├── Size Limit Guard
     ├── Fact Extractor
-    └── Storage Layer
-            ├── .agent-memory/{SOUL,MEMORY,USER}.md  (git-tracked)
-            └── ~/.agent-memory/cache/{hash}/provenance.db  (SQLite WAL)
+    ├── Storage Layer
+    │       ├── .agent-memory/{SOUL,MEMORY,USER}.md  (git-tracked)
+    │       └── ~/.agent-memory/cache/{hash}/provenance.db  (SQLite WAL)
+    └── State tools (only when FIVEHEAD_STATE_URL and FIVEHEAD_STATE_TOKEN are set)
+            │ HTTP, bearer token
+            ▼
+        FiveHead.State.Api  →  Postgres
 ```
 
 ---
@@ -235,10 +304,12 @@ Requirements: .NET 9 SDK.
 
 ## Shared state
 
-Curated memory stays in this process. Agents that must share a work queue
-without lost updates use the separate service in [`state-api/`](state-api/README.md):
-Postgres, version-checked matter updates, expiring claims, and a thin MCP
-wrapper. It does not write `SOUL.md` / `MEMORY.md` / `USER.md`.
+Curated memory stays in the 5head process. Matters that more than one agent
+must update live in Postgres behind [`deploy/`](deploy/README.md). The same
+MCP server calls that API when it is configured. The API does not write
+`SOUL.md` / `MEMORY.md` / `USER.md`. The capture pattern (proxy hook, explicit
+`update_matter`, agent-loop backstop, reconcile sweep) is
+[`docs/capture-pattern.md`](docs/capture-pattern.md).
 
 ## License
 

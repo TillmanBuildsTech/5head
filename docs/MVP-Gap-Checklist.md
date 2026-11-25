@@ -15,13 +15,13 @@ loading, contradiction and remove tests, a release workflow).
 - MCP tools: `read_memory`, `write_memory`, `check_contradictions`, `list_facts`, `confirm_fact`, `retract_fact`, `get_provenance`
 - Structured payloads for contradictions, fact lists, provenance history, and the read/write content hash
 - MCP resources: `memory://soul`, `memory://memory`, `memory://user`
-- Minimal `.agent-memory/config.yaml` loader (`stalenessThresholdDays`, `provenanceDbPath` only). Dapper and YamlDotNet are not used
+- Minimal `.agent-memory/config.yaml` loader (`stalenessThresholdDays`, `provenanceDbPath`, and optional `stateApiUrl` / `stateAuthToken` / `stateAgent`). Dapper and YamlDotNet are not used
 - Repo-first root selection, with `~/.agent-memory/global/` only as an unmarketed fallback
 - Manual `replace` as the only compaction path
 - Registry-free GitHub Release installer (`scripts/install.js`) and Native AOT publish for the five RIDs
 - Write path: per-file cross-process locks, temp-file rename, expected content hash, provenance transaction with file restore on failure, SQLite `busy_timeout`, errors for unknown and already-retracted ids
 - `remove` keeps the file and the extracted facts together: a fact is retracted when it is absent from the file after the removal, not merely because the remove string parsed as that fact
-- Shared matter service in `state-api/` (separate process, Postgres). It is not part of the curated-memory server
+- Shared matter service in `src/FiveHead.State.Api` (separate process, Postgres). The same `5head-mcp` process exposes its tools only when `FIVEHEAD_STATE_URL` and `FIVEHEAD_STATE_TOKEN` are set
 
 ## Still open
 

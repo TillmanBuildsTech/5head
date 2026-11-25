@@ -1,13 +1,13 @@
 """LiteLLM custom logger: append one state-api event for every successful model response.
 
-Register it from the LiteLLM proxy config directory:
+Register it from the LiteLLM proxy config directory (this file lives in examples/):
 
     litellm_settings:
       callbacks: litellm_matter_callback.matter_callback
 
 The proxy does not decide the curated memory. It only records that a turn
-happened. Agents still call update_matter explicitly when a matter's status
-or next step changes. See docs/capture-pattern.md.
+happened. Agents still call update_matter on 5head explicitly when a matter's
+status or next step changes. See docs/capture-pattern.md.
 
 Environment:
     STATE_API_URL       base URL of the state API

@@ -28,7 +28,7 @@ Thumbs.db
 
 # local secrets for the shared-state service
 .env
-state-api/.env
+deploy/.env
 
 # Python bytecode from the example hooks
 __pycache__/

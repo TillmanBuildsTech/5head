@@ -1,9 +1,9 @@
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
-COPY FiveHead.State.Api.csproj ./
-RUN dotnet restore
-COPY . ./
-RUN dotnet publish -c Release -o /app --no-restore
+COPY src/FiveHead.State.Api/FiveHead.State.Api.csproj src/FiveHead.State.Api/
+RUN dotnet restore src/FiveHead.State.Api/FiveHead.State.Api.csproj
+COPY src/FiveHead.State.Api/ src/FiveHead.State.Api/
+RUN dotnet publish src/FiveHead.State.Api/FiveHead.State.Api.csproj -c Release -o /app --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:9.0
 RUN apt-get update \

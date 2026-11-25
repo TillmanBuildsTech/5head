@@ -1,4 +1,6 @@
-# Home-lab stack. Copy .env.example to .env and set STATE_AUTH_TOKEN first.
+# Home-lab stack. From this directory: cp .env.example .env, set STATE_AUTH_TOKEN,
+# then docker compose up --build. The build context is the repo root so the
+# Dockerfile can copy src/FiveHead.State.Api.
 # Postgres is not published as the thing agents talk to; only the API should sit
 # behind a Cloudflare Tunnel.
 
@@ -21,10 +23,11 @@ services:
 
   api:
     build:
-      context: ./FiveHead.State.Api
+      context: ..
+      dockerfile: deploy/Dockerfile
     environment:
       STATE_DATABASE_URL: postgres://${POSTGRES_USER:-state}:${POSTGRES_PASSWORD:-state}@postgres:5432/${POSTGRES_DB:-state}
-      STATE_AUTH_TOKEN: ${STATE_AUTH_TOKEN:?set STATE_AUTH_TOKEN in .env}
+      STATE_AUTH_TOKEN: ${STATE_AUTH_TOKEN:?set STATE_AUTH_TOKEN in deploy/.env}
       STATE_CLAIM_TTL_SECONDS: ${STATE_CLAIM_TTL_SECONDS:-300}
       ASPNETCORE_URLS: http://+:8080
     ports:

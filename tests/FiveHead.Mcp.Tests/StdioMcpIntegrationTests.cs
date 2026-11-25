@@ -39,7 +39,9 @@ public sealed class StdioMcpIntegrationTests : IDisposable
             },
             EnvironmentVariables = new Dictionary<string, string?>
             {
-                ["HOME"] = _homeRoot
+                ["HOME"] = _homeRoot,
+                ["FIVEHEAD_STATE_URL"] = "",
+                ["FIVEHEAD_STATE_TOKEN"] = ""
             }
         });
 
@@ -61,6 +63,8 @@ public sealed class StdioMcpIntegrationTests : IDisposable
         Assert.Contains(tools, tool => tool.Name == "read_memory");
         Assert.Contains(tools, tool => tool.Name == "write_memory");
         Assert.Contains(tools, tool => tool.Name == "get_provenance");
+        Assert.DoesNotContain(tools, tool => tool.Name == "list_matters");
+        Assert.DoesNotContain(tools, tool => tool.Name == "update_matter");
         Assert.Contains(resources, resource => resource.Name == "memory" && resource.Title == "MEMORY.md");
         Assert.Contains(resources, resource => resource.Name == "soul" && resource.Title == "SOUL.md");
 
@@ -116,7 +120,9 @@ public sealed class StdioMcpIntegrationTests : IDisposable
             WorkingDirectory = _workspaceRoot,
             EnvironmentVariables = new Dictionary<string, string?>
             {
-                ["HOME"] = _homeRoot
+                ["HOME"] = _homeRoot,
+                ["FIVEHEAD_STATE_URL"] = "",
+                ["FIVEHEAD_STATE_TOKEN"] = ""
             }
         });
 
@@ -164,6 +170,37 @@ public sealed class StdioMcpIntegrationTests : IDisposable
             Assert.Equal(1, payload.GetProperty("count").GetInt32());
             Assert.Equal(1, payload.GetProperty("history").GetArrayLength());
         });
+    }
+
+    [Fact]
+    public async Task StdioServer_RegistersStateToolsWhenConfigured()
+    {
+        var transport = new StdioClientTransport(new StdioClientTransportOptions
+        {
+            Name = "5head-state-test",
+            Command = "dotnet",
+            Arguments = [typeof(MemoryMcpTools).Assembly.Location],
+            WorkingDirectory = _workspaceRoot,
+            EnvironmentVariables = new Dictionary<string, string?>
+            {
+                ["HOME"] = _homeRoot,
+                ["FIVEHEAD_STATE_URL"] = "http://127.0.0.1:9",
+                ["FIVEHEAD_STATE_TOKEN"] = "test-token",
+                ["FIVEHEAD_STATE_AGENT"] = "hermes-lab"
+            }
+        });
+
+        await using var client = await McpClient.CreateAsync(transport);
+        var tools = await client.ListToolsAsync();
+
+        Assert.Contains(tools, tool => tool.Name == "read_memory");
+        Assert.Contains(tools, tool => tool.Name == "list_matters");
+        Assert.Contains(tools, tool => tool.Name == "get_matter");
+        Assert.Contains(tools, tool => tool.Name == "create_matter");
+        Assert.Contains(tools, tool => tool.Name == "update_matter");
+        Assert.Contains(tools, tool => tool.Name == "append_event");
+        Assert.Contains(tools, tool => tool.Name == "claim_next");
+        Assert.Contains(tools, tool => tool.Name == "release_claim");
     }
 
     public void Dispose()

@@ -20,8 +20,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\FiveHead.State.Api\FiveHead.State.Api.csproj" />
-    <ProjectReference Include="..\FiveHead.State.Mcp\FiveHead.State.Mcp.csproj" />
+    <ProjectReference Include="..\..\src\FiveHead.State.Api\FiveHead.State.Api.csproj" />
+
   </ItemGroup>
 
 </Project>

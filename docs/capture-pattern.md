@@ -9,9 +9,9 @@ Four layers, from automatic to deliberate:
 ## 1. Proxy hook on every turn
 
 The local LLM proxy sees every completion, including turns where the agent
-forgot to call a tool. `hooks/litellm_matter_callback.py` is a LiteLLM custom
-logger. `hooks/http_middleware_snippet.py` is the same idea for a generic ASGI
-proxy.
+forgot to call a tool. `examples/litellm_matter_callback.py` is a LiteLLM
+custom logger. `examples/http_middleware_snippet.py` is the same idea for a
+generic ASGI proxy.
 
 The hook POSTs one append-only event:
 
@@ -30,8 +30,9 @@ Postgres.
 
 ## 2. Explicit `update_matter`
 
-When an agent actually changes the plan, it calls the MCP tool (or the HTTP
-API) with the version it last read:
+When an agent actually changes the plan, it calls 5head's `update_matter`
+tool (or the HTTP API) with the version it last read. A stale version comes
+back as a tool error that includes the current version:
 
 ```json
 { "version": 3, "agent": "hermes-local", "status": "blocked", "nextStep": "wait for tunnel" }
@@ -52,7 +53,7 @@ The system prompt for each Hermes agent, and for the cloud agent, should say:
 - At the start of a task, `get_matter` or `claim_next`.
 - Before finishing a turn that changed the plan, `update_matter` with the
   version from the last read.
-- If the tool returns a conflict, re-read once and retry once.
+- If `update_matter` returns a version conflict, the error includes the current version. Re-read once and retry once.
 - `release_claim` when the task is done or handed off.
 
 The proxy hook still records the turn if the model skips the tool. The
@@ -60,7 +61,7 @@ backstop is what keeps status and next step honest.
 
 ## 4. Periodic reconciliation sweep
 
-`scripts/reconcile.py` lists `open` matters whose newest event is older than
+`examples/reconcile.py` lists `open` matters whose newest event is older than
 `STATE_RECONCILE_MINUTES` (default 30). Run it from cron on the home-lab host.
 It only prints JSON. A human or a follow-up agent decides whether to append a
 `reconcile` event, release a stuck claim, or update `nextStep`.
