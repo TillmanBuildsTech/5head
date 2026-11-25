@@ -10,7 +10,8 @@ the memory tools, opens no network connection, and does not need Postgres.
 
 **Shared State is an optional add-on** for multi-agent and team setups. It
 stays off until both of those variables are set. The same binary then also
-talks to the state API.
+talks to the state API. An operator console for that API is a further
+opt-in (`FIVEHEAD_ADMIN_ENABLED`); it is not part of the local memory server.
 
 ## Why another memory MCP?
 
@@ -258,6 +259,7 @@ MCP Client (Claude Code / Copilot / Cursor)
             │ HTTP, bearer token
             ▼
         FiveHead.State.Api  →  Postgres
+            └── /admin console, off unless FIVEHEAD_ADMIN_ENABLED=true
 ```
 
 ---
@@ -366,6 +368,41 @@ The compose file does not bind a host port, so a lab agent on the Coolify
 machine uses that same public hostname. Use a different `FIVEHEAD_STATE_AGENT`
 per agent.
 
+### Admin console
+
+The API can serve a small operator console at `/admin`. It is **off by
+default**. With the flag unset, `/admin` is not a route (HTTP 404), including
+for clients that already hold the state bearer token. Local memory is
+unchanged: this console is part of the optional shared-state API, not of
+`5head-mcp`.
+
+On the `api` service in Coolify, set:
+
+| Variable | Meaning |
+|----------|---------|
+| `FIVEHEAD_ADMIN_ENABLED` | `true` to serve `/admin`. Anything else, including unset, leaves it off. `docker-compose.yml` passes this through and defaults it to `false`. |
+| `FIVEHEAD_ADMIN_TOKEN` | Optional. When set (8+ characters), only this token can open the console or call `/admin/api`. Leave it unset to reuse `STATE_AUTH_TOKEN`. Set a **different** value when agents hold the state token, so a leaked agent token cannot force-release a claim or change another owner's status. Do not put this token in an agent's MCP env. |
+
+Open `https://5head-state.example.com/admin` and paste the admin token into
+the sign-in form. The browser exchanges it for an HttpOnly, `SameSite=Strict`
+cookie scoped to `/admin` (12 hours, `Secure` on HTTPS). The page script
+never stores the token. Signing out deletes the cookie. Scripts can send
+`Authorization: Bearer <admin token>` to `/admin/api/...` instead of using
+the form.
+
+The console lists and filters matters, shows metadata and the append-only
+event timeline, edits `status` / `owner` / `nextStep` with the same version
+check as `PATCH /matters/{id}` (a stale version is HTTP 409 and the row is
+left as-is), and can clear a claim another agent still holds. Those operator
+writes are stored as events from the agent name `admin` (`admin.update`,
+`admin.force_release`). The public matter routes are unchanged: a non-owner
+still cannot change status or owner through `PATCH /matters/{id}`.
+
+Memory browsing is out of scope. Per-agent memory lives in that agent's
+`.agent-memory/` files and provenance database, not in Postgres. A later
+viewer would have to run on the machine that holds those files; it should
+not upload them into the shared state API.
+
 ### Local smoke test
 
 From the repository root, with Docker Compose v2. No `.env` is required.
@@ -396,6 +433,10 @@ curl examples, and the tunnel notes are in [`deploy/README.md`](deploy/README.md
 The API does not write `SOUL.md` / `MEMORY.md` / `USER.md`. The capture
 pattern (proxy hook, explicit `update_matter`, agent-loop backstop,
 reconcile sweep) is [`docs/capture-pattern.md`](docs/capture-pattern.md).
+
+The optional admin console (`FIVEHEAD_ADMIN_ENABLED=true`, path `/admin`)
+reads and updates this shared state only. It does not browse per-agent
+memory files. See "Admin console" under Deploy on Coolify.
 
 ## License
 

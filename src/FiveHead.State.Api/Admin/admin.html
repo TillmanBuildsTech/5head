@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>5head admin</title>
+  <link rel="stylesheet" href="/admin/app.css">
+</head>
+<body>
+  <div id="login" class="login-wrap">
+    <form id="login-form" class="card login-card" novalidate>
+      <div class="brand">
+        <span class="mark" aria-hidden="true">5h</span>
+        <div>
+          <strong>5head</strong>
+          <small>Shared state</small>
+        </div>
+      </div>
+      <h1>Admin console</h1>
+      <p class="lede">Enter the admin token to manage shared matters and claims.</p>
+      <p class="lede muted">Per-agent memory files are not shown here.</p>
+      <label for="token">Admin token</label>
+      <input id="token" name="token" type="password" autocomplete="current-password" spellcheck="false" required>
+      <p id="login-error" class="banner bad hidden" role="alert"></p>
+      <button class="primary" type="submit">Sign in</button>
+      <noscript><p class="lede">This console needs JavaScript to call the API.</p></noscript>
+    </form>
+  </div>
+
+  <div id="app" class="hidden">
+    <div class="wrap">
+      <header class="appbar">
+        <div class="brand">
+          <span class="mark" aria-hidden="true">5h</span>
+          <div>
+            <strong>5head</strong>
+            <small>Shared state</small>
+          </div>
+        </div>
+        <nav aria-label="Sections">
+          <a href="#/attention" data-nav="attention">Needs attention</a>
+          <a href="#/overview" data-nav="overview">Overview</a>
+          <a href="#/matters" data-nav="matters">Matters</a>
+        </nav>
+        <button id="logout" class="ghost" type="button">Sign out</button>
+      </header>
+      <main id="main" tabindex="-1"></main>
+      <p class="footnote">Shared state only. Memory files (SOUL.md, MEMORY.md, USER.md, provenance) stay on each agent.</p>
+    </div>
+  </div>
+  <script src="/admin/app.js"></script>
+</body>
+</html>

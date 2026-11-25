@@ -28,6 +28,7 @@ public sealed record Matter(
         version = Version,
         claimedBy = ClaimedBy,
         claimExpiresAt = ClaimExpiresAt,
+        claimActive = ClaimExpiresAt is not null && ClaimExpiresAt > DateTimeOffset.UtcNow,
         createdAt = CreatedAt,
         updatedAt = UpdatedAt,
         events = events?.Select(e => e.ToResponse()).ToArray()
@@ -71,6 +72,25 @@ public sealed record MutationResult(MutationKind Kind, Matter? Matter, string? M
         new(MutationKind.Conflict, matter, message, code);
     public static MutationResult Forbidden(Matter matter, string message) => new(MutationKind.Forbidden, matter, message);
 }
+
+public sealed record StatusCount(string Status, int Count);
+
+public sealed record ClaimSnapshot(
+    Guid Id,
+    string Title,
+    string Owner,
+    string Status,
+    string ClaimedBy,
+    DateTimeOffset? ClaimExpiresAt,
+    bool Active,
+    long Version);
+
+public sealed record MatterOverview(
+    int Total,
+    IReadOnlyList<StatusCount> ByStatus,
+    int ActiveClaims,
+    int StaleClaims,
+    IReadOnlyList<ClaimSnapshot> Claims);
 
 public sealed record MatterPatch(
     long Version,

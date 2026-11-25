@@ -11,9 +11,13 @@ public sealed class StateApiCollection : ICollectionFixture<StateApiFixture>;
 
 public sealed class StateApiFixture : IAsyncLifetime
 {
+    public const string StateToken = "test-token";
+    public const string AdminToken = "admin-token";
+
     private readonly string _adminConnection;
     private readonly string _databaseName = "state_it_" + Guid.NewGuid().ToString("N");
     private WebApplicationFactory<Program>? _factory;
+    private WebApplicationFactory<Program>? _adminFactory;
 
     public StateApiFixture()
     {
@@ -23,16 +27,14 @@ public sealed class StateApiFixture : IAsyncLifetime
 
     public string DatabaseConnection { get; private set; } = "";
 
-    public HttpClient CreateClient(bool authenticate = true)
-    {
-        var client = _factory!.CreateClient();
-        if (authenticate)
-        {
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-token");
-        }
+    public HttpClient CreateClient(bool authenticate = true) =>
+        Create(_factory, authenticate ? StateToken : null);
 
-        return client;
-    }
+    public HttpClient CreateAdminClient(string? bearer = null, bool handleCookies = true) =>
+        Create(_adminFactory, bearer, handleCookies);
+
+    public WebApplicationFactory<Program> CreateFactory(bool adminEnabled, string? adminToken) =>
+        new StateFactory(DatabaseConnection, adminEnabled, adminToken);
 
     public async Task ResetAsync()
     {
@@ -56,15 +58,23 @@ public sealed class StateApiFixture : IAsyncLifetime
             Database = _databaseName
         };
         DatabaseConnection = builder.ConnectionString;
-        _factory = new StateFactory(DatabaseConnection);
-        // Touch the server once so migrations finish before tests race the first request.
+        _factory = new StateFactory(DatabaseConnection, adminEnabled: false, adminToken: null);
+        _adminFactory = new StateFactory(DatabaseConnection, adminEnabled: true, adminToken: AdminToken);
         using var warmup = CreateClient();
         using var health = await warmup.GetAsync("/health");
         health.EnsureSuccessStatusCode();
+        using var adminWarmup = CreateAdminClient();
+        using var adminHealth = await adminWarmup.GetAsync("/health");
+        adminHealth.EnsureSuccessStatusCode();
     }
 
     public async Task DisposeAsync()
     {
+        if (_adminFactory is not null)
+        {
+            await _adminFactory.DisposeAsync();
+        }
+
         if (_factory is not null)
         {
             await _factory.DisposeAsync();
@@ -82,19 +92,40 @@ public sealed class StateApiFixture : IAsyncLifetime
         await drop.ExecuteNonQueryAsync();
     }
 
-    private sealed class StateFactory(string connectionString) : WebApplicationFactory<Program>
+    private static HttpClient Create(WebApplicationFactory<Program>? factory, string? bearer, bool handleCookies = true)
+    {
+        var client = factory!.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            HandleCookies = handleCookies,
+            AllowAutoRedirect = false
+        });
+        if (bearer is not null)
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
+        }
+
+        return client;
+    }
+
+    private sealed class StateFactory(string connectionString, bool adminEnabled, string? adminToken) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
-            builder.UseSetting("STATE_DATABASE_URL", connectionString);
-            builder.UseSetting("STATE_AUTH_TOKEN", "test-token");
+            var settings = new Dictionary<string, string?>
+            {
+                ["STATE_DATABASE_URL"] = connectionString,
+                ["STATE_AUTH_TOKEN"] = StateToken,
+                ["FIVEHEAD_ADMIN_ENABLED"] = adminEnabled ? "true" : "false",
+                ["FIVEHEAD_ADMIN_TOKEN"] = adminToken ?? ""
+            };
+            foreach (var pair in settings)
+            {
+                builder.UseSetting(pair.Key, pair.Value);
+            }
+
             builder.ConfigureAppConfiguration((_, config) =>
             {
-                config.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    ["STATE_DATABASE_URL"] = connectionString,
-                    ["STATE_AUTH_TOKEN"] = "test-token"
-                });
+                config.AddInMemoryCollection(settings);
             });
         }
     }

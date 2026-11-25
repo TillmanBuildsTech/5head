@@ -13,6 +13,9 @@
 # A host port is opt-in and is not loaded automatically. See
 # docker-compose.ports.yml:
 #   FIVEHEAD_HOST_PORT=18080 docker compose -f docker-compose.yml -f docker-compose.ports.yml up -d
+#
+# The admin console is off unless FIVEHEAD_ADMIN_ENABLED=true. An empty
+# FIVEHEAD_ADMIN_TOKEN reuses the state bearer token. See the README.
 
 services:
   postgres:
@@ -45,6 +48,8 @@ services:
       STATE_AUTH_TOKEN: ${SERVICE_PASSWORD_64_FIVEHEAD:-${FIVEHEAD_STATE_TOKEN:-local-dev-token}}
       FIVEHEAD_STATE_TOKEN: ${SERVICE_PASSWORD_64_FIVEHEAD:-${FIVEHEAD_STATE_TOKEN:-local-dev-token}}
       STATE_CLAIM_TTL_SECONDS: ${STATE_CLAIM_TTL_SECONDS:-300}
+      FIVEHEAD_ADMIN_ENABLED: ${FIVEHEAD_ADMIN_ENABLED:-false}
+      FIVEHEAD_ADMIN_TOKEN: ${FIVEHEAD_ADMIN_TOKEN:-}
       ASPNETCORE_URLS: http://+:8080
     expose:
       - "8080"

@@ -19,8 +19,9 @@ is not published as Native AOT. The stdio host that calls it is.
 | Path | Role |
 |------|------|
 | `src/FiveHead.State.Api` | HTTP API and SQL migrations |
+| `src/FiveHead.State.Api/Admin` | Optional operator console. Static files embedded in the API. Off unless `FIVEHEAD_ADMIN_ENABLED=true` |
 | `src/FiveHead.State.Client` | Typed HTTP client used by `5head-mcp` |
-| `tests/FiveHead.State.Tests` | 409, claim exclusivity, owner rule, auth |
+| `tests/FiveHead.State.Tests` | 409, claim exclusivity, owner rule, auth, admin console gating |
 | `examples/` | LiteLLM callback, generic ASGI snippet, reconcile sweep |
 | `docs/capture-pattern.md` | Proxy hook, explicit updates, agent backstop, reconcile sweep |
 | `docker-compose.yml` (repo root) | Postgres 16 + the API. No host ports. This is what Coolify imports |
@@ -54,6 +55,8 @@ section "Deploy on Coolify".
 | `STATE_DATABASE_URL` | API | `postgres://user:pass@host:5432/db` or an Npgsql keyword string |
 | `STATE_AUTH_TOKEN` | API | Bearer token the API expects. At least 8 characters |
 | `STATE_CLAIM_TTL_SECONDS` | API | Default claim lifetime (300) |
+| `FIVEHEAD_ADMIN_ENABLED` | API | `true` serves `/admin`. Unset or any other value does not map those routes (404). Compose defaults this to `false` |
+| `FIVEHEAD_ADMIN_TOKEN` | API | Optional second bearer for the console only. Unset reuses `STATE_AUTH_TOKEN`. Set a different value so agent tokens cannot call admin overrides. At least 8 characters when set |
 | `FIVEHEAD_STATE_URL` | `5head-mcp` | Base URL of this API. Together with the token, turns the state tools on |
 | `FIVEHEAD_STATE_TOKEN` | `5head-mcp` | Same secret as `STATE_AUTH_TOKEN` |
 | `FIVEHEAD_STATE_AGENT` | `5head-mcp` | Name stored as `agent` / `claimed_by` (default `5head`) |
@@ -99,6 +102,45 @@ git. `.env` is gitignored.
 those tools are registered only when `FIVEHEAD_STATE_URL` and
 `FIVEHEAD_STATE_TOKEN` are both set (or the matching `config.yaml` keys).
 See the README section "Local memory by default, shared state when you opt in".
+
+## Admin console
+
+Off by default. Set `FIVEHEAD_ADMIN_ENABLED=true` on the API process and open
+`/admin`. The sign-in form posts the admin token once; the API sets an
+HttpOnly `SameSite=Strict` cookie on path `/admin` for 12 hours (`Secure`
+when the request is HTTPS). The page does not keep the token in
+`localStorage` or `sessionStorage`. `DELETE /admin/session` clears the cookie.
+
+`/admin/api` accepts that cookie or `Authorization: Bearer` with the admin
+token. It does not accept the state token when `FIVEHEAD_ADMIN_TOKEN` is set
+to something else. The public routes keep requiring `STATE_AUTH_TOKEN`.
+
+Operator edits of status, owner, and next step still send `version`. A
+mismatch is **409** with the current row, and nothing is written. The owner
+rule on `PATCH /matters/{id}` is unchanged. The admin route may change status
+or owner without being the owner, and `POST /admin/api/matters/{id}/force-release`
+clears a claim held by any agent. Both write an append-only event as agent
+`admin`.
+
+The console shows shared matters only. `SOUL.md`, `MEMORY.md`, `USER.md`, and
+the provenance database stay on each agent and are not browsable here.
+
+```sh
+curl -sS -X POST "$API/admin/session" \
+  -H "Content-Type: application/json" \
+  -d '{"token":"'"$ADMIN_TOKEN"'"}'
+
+curl -sS -X PATCH "$API/admin/api/matters/MATTER_ID" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"version":1,"status":"blocked","owner":"ops","nextStep":"look at the claim"}'
+
+curl -sS -X POST "$API/admin/api/matters/MATTER_ID/force-release" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+`$ADMIN_TOKEN` is `FIVEHEAD_ADMIN_TOKEN`, or `STATE_AUTH_TOKEN` when that
+variable is unset. These routes 404 while the console is disabled.
 
 ## HTTP API
 
