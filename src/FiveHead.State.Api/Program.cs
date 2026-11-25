@@ -18,6 +18,8 @@ if (string.IsNullOrWhiteSpace(authToken) || authToken.Length < 8)
 var claimTtl = int.TryParse(builder.Configuration["STATE_CLAIM_TTL_SECONDS"], out var configuredTtl)
     ? Math.Clamp(configuredTtl, 1, 86_400)
     : 300;
+var adminEnabled = AdminGate.IsEnabled(builder.Configuration);
+var adminToken = adminEnabled ? AdminGate.ResolveToken(builder.Configuration, authToken) : string.Empty;
 
 builder.Services.AddOpenApi();
 builder.Services.AddSingleton(NpgsqlDataSource.Create(ConnectionStrings.ToNpgsql(databaseUrl)));
@@ -29,21 +31,51 @@ await MigrationRunner.ApplyAsync(app.Services.GetRequiredService<NpgsqlDataSourc
 app.MapOpenApi();
 app.Use(async (context, next) =>
 {
-    if (context.Request.Path.StartsWithSegments("/health")
-        || context.Request.Path.StartsWithSegments("/openapi"))
+    var path = context.Request.Path;
+    if (path.StartsWithSegments("/health") || path.StartsWithSegments("/openapi"))
     {
         await next();
         return;
     }
 
-    var header = context.Request.Headers.Authorization.ToString();
-    var presented = header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
-        ? header["Bearer ".Length..].Trim()
-        : string.Empty;
-    if (!BearerToken.Matches(presented, authToken))
+    if (path.StartsWithSegments("/admin"))
     {
-        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-        await context.Response.WriteAsJsonAsync(new { error = "unauthorized", message = "Bearer token was missing or rejected." });
+        if (!adminEnabled)
+        {
+            await ApiResults.NotFoundBody().ExecuteAsync(context);
+            return;
+        }
+
+        if (string.Equals(path.Value, "/admin/", StringComparison.OrdinalIgnoreCase))
+        {
+            context.Request.Path = "/admin";
+        }
+
+        context.Response.OnStarting(static state =>
+        {
+            var response = ((HttpContext)state!).Response;
+            response.Headers["X-Content-Type-Options"] = "nosniff";
+            response.Headers["Referrer-Policy"] = "no-referrer";
+            response.Headers["X-Frame-Options"] = "DENY";
+            response.Headers["Content-Security-Policy"] =
+                "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+            response.Headers["Cache-Control"] = "no-store";
+            return Task.CompletedTask;
+        }, context);
+
+        if (AdminGate.IsAnonymous(path, context.Request.Method) || AdminGate.IsAuthorized(context, adminToken))
+        {
+            await next();
+            return;
+        }
+
+        await ApiResults.Unauthorized().ExecuteAsync(context);
+        return;
+    }
+
+    if (!BearerToken.Matches(PresentedBearer(context), authToken))
+    {
+        await ApiResults.Unauthorized().ExecuteAsync(context);
         return;
     }
 
@@ -74,7 +106,7 @@ app.MapPost("/matters", async (HttpRequest request, MatterRepository store, Canc
     var body = await ReadBodyAsync(request, ct);
     if (body is null)
     {
-        return BadJson();
+        return ApiResults.BadJson();
     }
 
     if (!TryRequiredString(body.Value, "title", out var title)
@@ -119,7 +151,7 @@ app.MapPatch("/matters/{id:guid}", async (Guid id, HttpRequest request, MatterRe
     var body = await ReadBodyAsync(request, ct);
     if (body is null)
     {
-        return BadJson();
+        return ApiResults.BadJson();
     }
 
     if (!body.Value.TryGetProperty("version", out var versionElement) || !versionElement.TryGetInt64(out var version))
@@ -174,7 +206,7 @@ app.MapPatch("/matters/{id:guid}", async (Guid id, HttpRequest request, MatterRe
         metadataJson,
         hasVector,
         EmptyToNull(Text(vectorElement))), ct);
-    return ToResult(result);
+    return ApiResults.From(result);
 })
 .WithName("update_matter")
 .WithTags("matters")
@@ -185,7 +217,7 @@ app.MapPost("/matters/{id:guid}/events", async (Guid id, HttpRequest request, Ma
     var body = await ReadBodyAsync(request, ct);
     if (body is null)
     {
-        return BadJson();
+        return ApiResults.BadJson();
     }
 
     if (!TryRequiredString(body.Value, "agent", out var agent)
@@ -220,7 +252,7 @@ app.MapPost("/claims/next", async (HttpRequest request, MatterRepository store, 
     var body = await ReadBodyAsync(request, ct);
     if (body is null)
     {
-        return BadJson();
+        return ApiResults.BadJson();
     }
 
     if (!TryRequiredString(body.Value, "agent", out var agent))
@@ -246,7 +278,7 @@ app.MapPost("/matters/{id:guid}/release", async (Guid id, HttpRequest request, M
     var body = await ReadBodyAsync(request, ct);
     if (body is null)
     {
-        return BadJson();
+        return ApiResults.BadJson();
     }
 
     if (!TryRequiredString(body.Value, "agent", out var agent))
@@ -254,28 +286,25 @@ app.MapPost("/matters/{id:guid}/release", async (Guid id, HttpRequest request, M
         return Results.BadRequest(new { error = "bad_request", message = "agent is required." });
     }
 
-    return ToResult(await store.ReleaseAsync(id, agent!, ct));
+    return ApiResults.From(await store.ReleaseAsync(id, agent!, ct));
 })
 .WithName("release_claim")
 .WithTags("claims");
 
+if (adminEnabled)
+{
+    AdminEndpoints.Map(app, adminToken);
+}
+
 app.Run();
 
-static IResult ToResult(MutationResult result) => result.Kind switch
+static string PresentedBearer(HttpContext context)
 {
-    MutationKind.Ok => Results.Ok(result.Matter!.ToResponse()),
-    MutationKind.NotFound => Results.NotFound(new { error = "not_found", message = result.Message }),
-    MutationKind.Conflict => Results.Json(
-        new { error = string.IsNullOrEmpty(result.Code) ? "conflict" : result.Code, message = result.Message, matter = result.Matter!.ToResponse() },
-        statusCode: StatusCodes.Status409Conflict),
-    MutationKind.Forbidden => Results.Json(
-        new { error = "forbidden", message = result.Message, matter = result.Matter!.ToResponse() },
-        statusCode: StatusCodes.Status403Forbidden),
-    _ => Results.StatusCode(StatusCodes.Status500InternalServerError)
-};
-
-static IResult BadJson() =>
-    Results.BadRequest(new { error = "bad_request", message = "Body must be a JSON object." });
+    var header = context.Request.Headers.Authorization.ToString();
+    return header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+        ? header["Bearer ".Length..].Trim()
+        : string.Empty;
+}
 
 static async Task<JsonElement?> ReadBodyAsync(HttpRequest request, CancellationToken ct)
 {

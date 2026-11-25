@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>5head admin</title>
+  <link rel="stylesheet" href="/admin/app.css">
+</head>
+<body>
+  <div id="login" class="login-wrap">
+    <form id="login-form" class="card login-card">
+      <div class="brand">
+        <span class="mark" aria-hidden="true">5h</span>
+        <div>
+          <strong>5head</strong>
+          <small>Shared state</small>
+        </div>
+      </div>
+      <h1>Admin console</h1>
+      <p class="lede">Sign in with the admin token. If <span class="mono">FIVEHEAD_ADMIN_TOKEN</span> is unset, that is the same bearer token the agents use. The browser keeps an HttpOnly cookie; this page does not store the token.</p>
+      <p class="lede muted">Matters, events, and claims only. Per-agent memory files are not in this API.</p>
+      <label class="sr" for="account">Account</label>
+      <input id="account" name="username" type="text" autocomplete="username" value="admin" hidden tabindex="-1">
+      <label for="token">Admin token</label>
+      <input id="token" name="token" type="password" autocomplete="current-password" spellcheck="false" required>
+      <p id="login-error" class="banner bad hidden" role="alert"></p>
+      <button class="primary" type="submit">Sign in</button>
+      <noscript><p class="lede">This console needs JavaScript to call the API.</p></noscript>
+    </form>
+  </div>
+
+  <div id="app" class="hidden">
+    <div class="wrap">
+      <header class="appbar">
+        <div class="brand">
+          <span class="mark" aria-hidden="true">5h</span>
+          <div>
+            <strong>5head</strong>
+            <small>Shared state</small>
+          </div>
+        </div>
+        <nav aria-label="Sections">
+          <a href="#/overview" data-nav="overview">Overview</a>
+          <a href="#/matters" data-nav="matters">Matters</a>
+        </nav>
+        <button id="logout" class="ghost" type="button">Sign out</button>
+      </header>
+      <main id="main"></main>
+      <p class="footnote">Shared state only. Memory browsing is out of scope: SOUL.md, MEMORY.md, USER.md, and provenance stay on each agent.</p>
+    </div>
+  </div>
+  <script src="/admin/app.js"></script>
+</body>
+</html>

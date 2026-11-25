@@ -72,6 +72,25 @@ public sealed record MutationResult(MutationKind Kind, Matter? Matter, string? M
     public static MutationResult Forbidden(Matter matter, string message) => new(MutationKind.Forbidden, matter, message);
 }
 
+public sealed record StatusCount(string Status, int Count);
+
+public sealed record ClaimSnapshot(
+    Guid Id,
+    string Title,
+    string Owner,
+    string Status,
+    string ClaimedBy,
+    DateTimeOffset? ClaimExpiresAt,
+    bool Active,
+    long Version);
+
+public sealed record MatterOverview(
+    int Total,
+    IReadOnlyList<StatusCount> ByStatus,
+    int ActiveClaims,
+    int StaleClaims,
+    IReadOnlyList<ClaimSnapshot> Claims);
+
 public sealed record MatterPatch(
     long Version,
     string Agent,

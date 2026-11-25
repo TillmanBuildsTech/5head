@@ -1,9 +1,11 @@
+using System.Text.Json;
 using Npgsql;
 
 namespace FiveHead.State.Api;
 
 public sealed class MatterRepository(NpgsqlDataSource dataSource)
 {
+    private static readonly JsonSerializerOptions PayloadJson = new(JsonSerializerDefaults.Web);
     private const string MatterColumns = """
         id, title, owner, status, next_step, metadata::text, vector_ref, version,
         claimed_by, claim_expires_at, created_at, updated_at
@@ -273,6 +275,245 @@ public sealed class MatterRepository(NpgsqlDataSource dataSource)
         var rows = await ReadMattersAsync(command, ct);
         await tx.CommitAsync(ct);
         return MutationResult.Ok(rows[0]);
+    }
+
+    public async Task<MatterOverview> GetOverviewAsync(CancellationToken ct)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        var byStatus = new List<StatusCount>();
+        await using (var command = new NpgsqlCommand(
+            """
+            SELECT status, COUNT(*)::int
+            FROM matters
+            GROUP BY status
+            ORDER BY status;
+            """,
+            connection))
+        {
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                byStatus.Add(new StatusCount(reader.GetString(0), reader.GetInt32(1)));
+            }
+        }
+
+        await using var claimsCommand = new NpgsqlCommand(
+            $"""
+            SELECT {MatterColumns}
+            FROM matters
+            WHERE claimed_by IS NOT NULL
+            ORDER BY CASE
+                         WHEN claim_expires_at IS NOT NULL AND claim_expires_at > now() THEN 0
+                         ELSE 1
+                     END,
+                     claim_expires_at NULLS LAST,
+                     title,
+                     id;
+            """,
+            connection);
+        var claimed = await ReadMattersAsync(claimsCommand, ct);
+        var now = DateTimeOffset.UtcNow;
+        var claims = claimed.Select(matter => new ClaimSnapshot(
+            matter.Id,
+            matter.Title,
+            matter.Owner,
+            matter.Status,
+            matter.ClaimedBy ?? "",
+            matter.ClaimExpiresAt,
+            matter.ClaimExpiresAt is not null && matter.ClaimExpiresAt > now,
+            matter.Version)).ToArray();
+
+        return new MatterOverview(
+            byStatus.Sum(row => row.Count),
+            byStatus,
+            claims.Count(row => row.Active),
+            claims.Count(row => !row.Active),
+            claims);
+    }
+
+    public async Task<MutationResult> AdminUpdateAsync(
+        Guid id,
+        long version,
+        bool hasStatus,
+        string? status,
+        bool hasOwner,
+        string? owner,
+        bool hasNextStep,
+        string? nextStep,
+        CancellationToken ct)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var tx = await connection.BeginTransactionAsync(ct);
+        var current = await LockMatterAsync(connection, tx, id, ct);
+        if (current is null)
+        {
+            await tx.CommitAsync(ct);
+            return MutationResult.NotFound($"Matter {id} does not exist.");
+        }
+
+        if (current.Version != version)
+        {
+            await tx.CommitAsync(ct);
+            return MutationResult.Conflict(
+                current,
+                $"Version conflict on matter {id}. Expected {version}, current is {current.Version}. Re-read and retry.");
+        }
+
+        var nextStatus = hasStatus ? status ?? current.Status : current.Status;
+        var nextOwner = hasOwner ? owner ?? current.Owner : current.Owner;
+        var nextNext = hasNextStep ? nextStep : current.NextStep;
+        var changed = !string.Equals(nextStatus, current.Status, StringComparison.Ordinal)
+            || !string.Equals(nextOwner, current.Owner, StringComparison.Ordinal)
+            || !string.Equals(nextNext, current.NextStep, StringComparison.Ordinal);
+        if (!changed)
+        {
+            await tx.CommitAsync(ct);
+            return MutationResult.Ok(current);
+        }
+
+        await using var command = new NpgsqlCommand(
+            $"""
+            UPDATE matters
+            SET owner = $3,
+                status = $4,
+                next_step = $5,
+                version = version + 1,
+                updated_at = now()
+            WHERE id = $1 AND version = $2
+            RETURNING {MatterColumns};
+            """,
+            connection,
+            tx);
+        command.Parameters.AddWithValue(id);
+        command.Parameters.AddWithValue(version);
+        command.Parameters.AddWithValue(nextOwner);
+        command.Parameters.AddWithValue(nextStatus);
+        command.Parameters.AddWithValue((object?)nextNext ?? DBNull.Value);
+        var updated = await ReadMattersAsync(command, ct);
+        if (updated.Count == 0)
+        {
+            await tx.CommitAsync(ct);
+            var latest = await GetAsync(id, ct);
+            return latest is null
+                ? MutationResult.NotFound($"Matter {id} does not exist.")
+                : MutationResult.Conflict(latest, $"Version conflict on matter {id}. Re-read and retry.");
+        }
+
+        var matter = updated[0];
+        await InsertEventAsync(
+            connection,
+            tx,
+            id,
+            AdminActions.Actor,
+            AdminActions.UpdateKind,
+            DescribeAdminUpdate(current, matter),
+            JsonSerializer.Serialize(new
+            {
+                before = new { status = current.Status, owner = current.Owner, nextStep = current.NextStep },
+                after = new { status = matter.Status, owner = matter.Owner, nextStep = matter.NextStep }
+            }, PayloadJson),
+            ct);
+        await tx.CommitAsync(ct);
+        return MutationResult.Ok(matter);
+    }
+
+    public async Task<MutationResult> ForceReleaseAsync(Guid id, CancellationToken ct)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(ct);
+        await using var tx = await connection.BeginTransactionAsync(ct);
+        var current = await LockMatterAsync(connection, tx, id, ct);
+        if (current is null)
+        {
+            await tx.CommitAsync(ct);
+            return MutationResult.NotFound($"Matter {id} does not exist.");
+        }
+
+        if (current.ClaimedBy is null)
+        {
+            await tx.CommitAsync(ct);
+            return MutationResult.Conflict(current, $"Matter {id} is not claimed.", "not_claimed");
+        }
+
+        var expired = current.ClaimExpiresAt is null || current.ClaimExpiresAt <= DateTimeOffset.UtcNow;
+        var heldBy = current.ClaimedBy;
+        await using var command = new NpgsqlCommand(
+            $"""
+            UPDATE matters
+            SET claimed_by = NULL,
+                claim_expires_at = NULL,
+                version = version + 1,
+                updated_at = now()
+            WHERE id = $1
+            RETURNING {MatterColumns};
+            """,
+            connection,
+            tx);
+        command.Parameters.AddWithValue(id);
+        var updated = await ReadMattersAsync(command, ct);
+        await InsertEventAsync(
+            connection,
+            tx,
+            id,
+            AdminActions.Actor,
+            AdminActions.ReleaseKind,
+            $"Cleared claim held by {heldBy}.",
+            JsonSerializer.Serialize(new
+            {
+                claimedBy = heldBy,
+                claimExpiresAt = current.ClaimExpiresAt,
+                expired
+            }, PayloadJson),
+            ct);
+        await tx.CommitAsync(ct);
+        return MutationResult.Ok(updated[0]);
+    }
+
+    private static string DescribeAdminUpdate(Matter before, Matter after)
+    {
+        var parts = new List<string>();
+        if (!string.Equals(before.Status, after.Status, StringComparison.Ordinal))
+        {
+            parts.Add($"status {before.Status} -> {after.Status}");
+        }
+
+        if (!string.Equals(before.Owner, after.Owner, StringComparison.Ordinal))
+        {
+            parts.Add($"owner {before.Owner} -> {after.Owner}");
+        }
+
+        if (!string.Equals(before.NextStep, after.NextStep, StringComparison.Ordinal))
+        {
+            parts.Add($"next step {Show(before.NextStep)} -> {Show(after.NextStep)}");
+        }
+
+        return parts.Count == 0 ? "No fields changed." : string.Join("; ", parts);
+    }
+
+    private static string Show(string? value) => string.IsNullOrEmpty(value) ? "(none)" : value;
+
+    private static async Task InsertEventAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction tx,
+        Guid matterId,
+        string agent,
+        string kind,
+        string summary,
+        string payloadJson,
+        CancellationToken ct)
+    {
+        await using var command = new NpgsqlCommand(
+            """
+            INSERT INTO events (matter_id, agent, kind, summary, payload)
+            VALUES ($1, $2, $3, $4, $5::jsonb);
+            """,
+            connection,
+            tx);
+        command.Parameters.AddWithValue(matterId);
+        command.Parameters.AddWithValue(agent);
+        command.Parameters.AddWithValue(kind);
+        command.Parameters.AddWithValue(summary);
+        command.Parameters.AddWithValue(payloadJson);
+        await command.ExecuteNonQueryAsync(ct);
     }
 
     private static async Task<Matter?> LockMatterAsync(
