@@ -23,7 +23,9 @@ and team setups. The same `5head-mcp` command gains `list_matters`, `get_matter`
 `create_matter`, `update_matter`, `append_event`, `claim_next`, and `release_claim`
 when the client sets `FIVEHEAD_STATE_URL` and `FIVEHEAD_STATE_TOKEN`.
 `FIVEHEAD_STATE_AGENT` names that agent on writes. A lab agent points the URL at
-`http://127.0.0.1:8080`. A cloud agent points it at the Cloudflare Tunnel hostname.
+the host port from `docker-compose.ports.yml` (the smoke test uses
+`http://127.0.0.1:18080`). The base compose file publishes no host port. A
+cloud agent points the URL at the Cloudflare Tunnel hostname.
 Leave both variables unset and the tool list stays the memory tools. See the
 README section "Local memory by default, shared state when you opt in".
 

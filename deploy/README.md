@@ -23,19 +23,23 @@ is not published as Native AOT. The stdio host that calls it is.
 | `tests/FiveHead.State.Tests` | 409, claim exclusivity, owner rule, auth |
 | `examples/` | LiteLLM callback, generic ASGI snippet, reconcile sweep |
 | `docs/capture-pattern.md` | Proxy hook, explicit updates, agent backstop, reconcile sweep |
-| `docker-compose.yml` (repo root) | Postgres 16 + the API. The only compose file |
+| `docker-compose.yml` (repo root) | Postgres 16 + the API. No host ports. This is what Coolify imports |
+| `docker-compose.ports.yml` (repo root) | Opt-in host port for the API. Not auto-loaded |
 
 ## Run
 
-From the repository root. Postgres is not published on the host. The API
-listens on `http://127.0.0.1:8080` and applies migrations before it accepts
-traffic. With no `.env`, the local defaults are database user `state`,
-password `state`, and bearer token `local-dev-token`.
+From the repository root. The base compose file publishes no host ports.
+Postgres stays on the compose network. The API listens on container port
+8080 and applies migrations before it accepts traffic. To reach it from the
+host, add `docker-compose.ports.yml` and set `FIVEHEAD_HOST_PORT` (no
+default; Compose exits if it is unset). With no `.env`, the local defaults
+are database user `state`, password `state`, and bearer token
+`local-dev-token`.
 
 ```sh
-docker compose up --build -d
-curl -fsS http://127.0.0.1:8080/health
-docker compose down
+FIVEHEAD_HOST_PORT=18080 docker compose -f docker-compose.yml -f docker-compose.ports.yml up --build -d
+curl -fsS http://127.0.0.1:18080/health
+FIVEHEAD_HOST_PORT=18080 docker compose -f docker-compose.yml -f docker-compose.ports.yml down
 ```
 
 Copy `.env.example` to `.env` before using any other password or token.
@@ -59,7 +63,7 @@ section "Deploy on Coolify".
 | `STATE_MATTER_ID` | LiteLLM hook | Fallback matter when request metadata has none |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Compose | Local overrides. Defaults `state` / `state` / `state` |
 | `SERVICE_USER_POSTGRES` / `SERVICE_PASSWORD_64_POSTGRES` / `SERVICE_PASSWORD_64_FIVEHEAD` | Coolify | Generated credentials. They replace the local defaults |
-| `API_PORT` | Compose | Host port for the API only (default 8080). Postgres has no host port |
+| `FIVEHEAD_HOST_PORT` | `docker-compose.ports.yml` | Host port for the API when that file is passed explicitly. No default. Postgres has no host port |
 
 The token is compared with SHA-256 and `CryptographicOperations.FixedTimeEquals`.
 The token is the trust boundary. `agent` is attribution: anyone holding the
@@ -73,8 +77,12 @@ each MCP client so it is not committed with the repo.
 ### Cloudflare Tunnel
 
 The cloud agent is not on the LAN. Run `cloudflared` on the home-lab host
-with a tunnel token, and point the public hostname at `http://localhost:8080`
-(or the compose service). Do not add Postgres to the ingress. Clients send:
+with a tunnel token, and point the public hostname at the API. The base
+compose file does not publish a host port, so either attach `cloudflared` to
+the compose network and use `http://api:8080`, or publish a host port with
+`docker-compose.ports.yml` and point the tunnel at
+`http://localhost:${FIVEHEAD_HOST_PORT}`. Do not add Postgres to the ingress.
+Clients send:
 
 ```http
 Authorization: Bearer <STATE_AUTH_TOKEN>
@@ -99,7 +107,7 @@ Everything else requires the bearer token.
 
 ```sh
 TOKEN=replace-with-a-long-random-token
-API=http://localhost:8080
+API=http://localhost:18080
 
 curl -sS "$API/health"
 
