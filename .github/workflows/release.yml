@@ -4,17 +4,21 @@ name: Release
 #
 #   - A PR opening against main runs ci.yml (the SNAPSHOT build): build + test +
 #     Native AOT, then publishes those binaries as the rolling `snapshot` pre-release.
-#   - Merging to main triggers THIS workflow. It rebuilds the exact release
-#     binaries at the current <Version>, publishes them as a stable GitHub
-#     Release (v<version>) with install.js and the platform binaries, then bumps
-#     the version (patch by default; `[release:minor]` or `[release:major]` in
-#     the merge message bumps that part) and opens a PR that carries the bump
-#     back to main.
+#   - Merging to main triggers THIS workflow. It reads the current <Version>
+#     and, if no v<version> tag exists yet, rebuilds the exact release binaries
+#     and publishes them as a stable GitHub Release (v<version>) with install.js
+#     and the platform binaries.
+#   - A release merge (any merge that releases a version) also bumps the version
+#     for the NEXT release (patch by default; `[release:minor]` or
+#     `[release:major]` in the merge message bumps that part) and opens a PR
+#     that carries the bump back to main. Merging that bump PR is what cuts the
+#     next release: its version is untagged, so the workflow releases it, and
+#     a bump merge does not open another bump PR (that would loop forever).
+#   - `[skip-release]` anywhere in the merge message is the only opt-out.
 #
-# The bump PR does NOT publish a GitHub Release. An empty stable release becomes
-# `releases/latest` (GitHub's latest is the newest non-prerelease), which makes
-# `releases/latest/download/install.js` 404. The bump commit message
-# (`chore(release): bump`) is what stops that merge from cutting another release.
+# Bump PRs are only ever opened for a version that already has a release, so
+# `releases/latest` always points at a release that has install.js and the
+# binaries.
 #
 # Install is registry-free: `curl -sL .../releases/latest/download/install.js | node`
 
@@ -39,6 +43,7 @@ jobs:
       bump: ${{ steps.bump.outputs.bump }}
       skip: ${{ steps.guard.outputs.skip }}
       already_released: ${{ steps.guard.outputs.already_released }}
+      is_bump: ${{ steps.guard.outputs.is_bump }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,15 +65,24 @@ jobs:
             echo "bump=patch" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Skip bump commits and already-published versions
+      - name: Skip opt-outs and already-published versions
         id: guard
         run: |
           MSG=$(git log -1 --format=%B)
-          if echo "$MSG" | grep -Eqi 'chore\(release\): bump|\[skip-release\]'; then
-            echo "Version-bump commit — not a release."
+          # Only an explicit [skip-release] opts a merge out. A version-bump merge
+          # is NOT skipped: it is how the next version gets released.
+          if echo "$MSG" | grep -qi '\[skip-release\]'; then
+            echo "[skip-release] in merge message — not releasing."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$MSG" | grep -Eqi 'chore\(release\): bump'; then
+            echo "Version-bump merge — will release it, and will not open another bump."
+            echo "is_bump=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_bump=false" >> "$GITHUB_OUTPUT"
           fi
 
           if git ls-remote --tags origin "refs/tags/v${{ steps.version.outputs.version }}" | grep -q .; then
@@ -168,6 +182,9 @@ jobs:
             ./scripts/install.js
 
       - name: Bump version and open a release PR
+        # Not after a bump merge: that merge just released the bumped version,
+        # and bumping again here would open the next bump PR in an endless loop.
+        if: needs.release-meta.outputs.is_bump != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -179,25 +196,23 @@ jobs:
           git checkout -b "$BRANCH"
           git add src/FiveHead.Mcp.Host/FiveHead.Mcp.Host.csproj \
                   src/FiveHead.Mcp.Core/FiveHead.Mcp.Core.csproj
-          git commit -m "chore(release): bump to v${NEXT} [skip-release]"
-          # The bump branch may already exist from a previous attempt (the
-          # v0.1.1 run pushed the branch, then failed to open the PR). Replace
+          git commit -m "chore(release): bump to v${NEXT}"
+          # The bump branch may already exist from a previous attempt. Replace
           # it with this bump, which is based on the commit we just released.
           if git fetch origin "$BRANCH"; then
             git push --force-with-lease="refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" origin "HEAD:refs/heads/${BRANCH}"
           else
             git push -u origin "HEAD:refs/heads/${BRANCH}"
           fi
-          # No empty release for v${NEXT}. `releases/latest` must keep pointing
-          # at the release that actually has install.js and the binaries.
-          # Merging the bump PR is skipped because its message matches
-          # `chore(release): bump`.
+          # Merging this PR releases v${NEXT}: its merge message matches
+          # `chore(release): bump`, the version is untagged, so release.yml
+          # builds and publishes it, and does not open another bump.
           EXISTING=$(gh pr list --repo "${{ github.repository }}" --head "$BRANCH" --base main --state open --json number --jq '.[0].number')
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
             echo "Bump PR #${EXISTING} is already open."
           else
             gh pr create --base main --head "$BRANCH" \
               --title "chore(release): bump to v${NEXT}" \
-              --body "Release v${{ needs.release-meta.outputs.version }} published with binaries and install.js. This PR only bumps the in-repo version to v${NEXT}. Merging it does not publish a release (\`chore(release): bump\` / \`[skip-release]\`)." \
+              --body "Release v${{ needs.release-meta.outputs.version }} published with binaries and install.js. Merging this PR bumps the in-repo version to v${NEXT} and publishes v${NEXT}." \
               --repo "${{ github.repository }}"
           fi

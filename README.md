@@ -271,16 +271,19 @@ MCP Client (Claude Code / Copilot / Cursor)
 - **Snapshot build** — every PR against `main` runs `ci.yml`: build + test +
   Native AOT for all platforms, and publishes the binaries as a rolling
   `snapshot` **pre-release** for trying unreleased builds.
-- **Production release** — merging to `main` runs `release.yml`: it rebuilds
-  the exact release binaries, publishes a GitHub Release `v<version>` (with
-  the one-line installer and the platform binaries as assets, marked latest),
-  then bumps the version (patch by default; `[release:minor]` /
-  `[release:major]` in the merge message bumps that part) and opens a release
-  PR carrying the bump back to `main` (main is PR-only, so the bot cannot push
-  directly). The bump PR does **not** publish a GitHub Release. An empty
-  stable release would become `releases/latest` and the installer URL would
-  404. Merging the bump is skipped because its commit message is
-  `chore(release): bump`.
+- **Production release** — merging to `main` runs `release.yml`. If the
+  `<Version>` in the Host csproj has no `v<version>` tag yet, it rebuilds the
+  exact release binaries and publishes a GitHub Release `v<version>` (with
+  the one-line installer and the platform binaries as assets, marked latest).
+  Then it bumps the version for the next release (patch by default;
+  `[release:minor]` / `[release:major]` in the merge message bumps that part)
+  and opens a bump PR to `main` (main is PR-only, so the bot cannot push
+  directly).
+- **Cutting a release from a bump** — merging the bump PR (`chore(release):
+  bump to v<version>`) is what publishes that version. Its version is untagged,
+  so `release.yml` releases it, and a bump merge does not open another bump.
+- **Opt-out** — `[skip-release]` anywhere in the merge message skips the release
+  for that merge.
 
 There is **no npm package and no registry** — distribution is entirely through
 GitHub Releases. Every release carries:
